@@ -1,0 +1,19 @@
+[package]
+name = "logai-api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+logai-core = { path = "../logai-core" } # core type which we made
+
+#HTTP server
+axum = "0.8" # web framework liek express
+tokio = {version = "1", features = ["full"] } #async runtime
+
+#serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+#logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
