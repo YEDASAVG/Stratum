@@ -25,7 +25,7 @@ async fn main() {
 
     //routes
     let app = Router::new()
-    .route("api/logs", post(ingest_log));
+    .route("/api/logs", post(ingest_log));
 
     // Server start
     let addr = "0.0.0.0:3000";
