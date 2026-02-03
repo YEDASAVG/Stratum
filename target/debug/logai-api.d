@@ -1,1 +1,0 @@
-/Volumes/Abhi_mac/Desktop/ollama_gateway/log-intelligence/target/debug/logai-api: /Volumes/Abhi_mac/Desktop/ollama_gateway/log-intelligence/crates/logai-api/src/main.rs /Volumes/Abhi_mac/Desktop/ollama_gateway/log-intelligence/crates/logai-core/src/lib.rs
