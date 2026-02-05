@@ -4,3 +4,25 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Core types
+logai-core = { path = "../logai-core" }
+
+#async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+#NATS client
+async-nats = "0.46"
+
+#clickhouse client
+clickhouse = {version = "0.14.2", features = ["lz4"]}
+
+#Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+#logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+#futures for stream processing
+futures = "0.3"

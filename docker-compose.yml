@@ -1,0 +1,40 @@
+# log-intelligence/docker-compose.yml
+
+services:
+  # Message Queue
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"  # Client connections
+      - "8222:8222"  # Monitoring/HTTP
+    command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
+    volumes:
+      - nats_data:/data
+
+  #log Storage (Analysis DB)
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.1
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native client interface
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    environment:
+      - CLICKHOUSE_DB=logai
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+
+  #Vector Database
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    ports:
+      - "6333:6333"  # gRPC interface
+      - "6334:6334"  # REST API
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  nats_data:
+  clickhouse_data:
+  qdrant_data:      
+    

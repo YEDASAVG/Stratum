@@ -17,3 +17,6 @@ serde_json = "1.0"
 #logging
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+#NATS- client
+async-nats = "0.46.0"
