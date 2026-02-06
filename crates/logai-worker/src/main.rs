@@ -1,7 +1,16 @@
 use clickhouse::Client;
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use futures::StreamExt;
 use logai_core::LogEntry;
 use tracing::{info, error};
+use serde_json::json;
+use qdrant_client::qdrant::{
+    CreateCollectionBuilder, Distance, PointStruct, UpsertPointsBuilder, VectorParamsBuilder,
+};
+use qdrant_client::{Payload, Qdrant};
+
+const COLLECTION_NAME: &str = "log_embeddings";
+const VECTOR_SIZE: u64 = 384; // all mini LML6V2 output 384 dimensions
 
 #[tokio::main]
 
@@ -18,15 +27,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let clickhouse = Client::default()
         .with_url("http://localhost:8123")
         .with_database("logai");
-    info!("Connected to Clickhouse!");
-
-    // Create table if not exists
     create_logs_table(&clickhouse).await?;
+    info!("Clickhouse ready!");
 
+    // Conncect to qdrant
+    info!("Connecting to Qdrant...");
+    let qdrant = Qdrant::from_url("http://localhost:6334").build()?;
+    setup_qdrant_collection(&qdrant).await?;
+    info!("Qdrant ready!");
+
+    // Load embedding model (running locally)
+    info!("Loading embedding model (First time downloads 30mb)..");
+    let mut  model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(true),)?;
+    info!("Embedding model loaded!");
 
     //Subscribe to logs.ingest
     info!("Subscribing to logs.ingest...");
     let mut subscriber = nats.subscribe("logs.ingest").await?;
+    info!("Worker ready! Waiting for logs...");
 
     //process messages
     while let Some(message) = subscriber.next().await {
@@ -38,10 +56,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     service = %entry.service,
                     "Received Log"
                 );
-                //Insert clickhouse
+                // Store in ClickHouse (exisitng)
                 if let Err(e) = insert_log(&clickhouse, &entry).await {
-                    error!("Failed to insert log: {}", e);
+                    error!("ClickHouse insert failed: {}", e);
                 } 
+
+                // Generate mebdding & store in Qdrant 
+                if let Err(e) = embed_and_store(&mut model, &qdrant, &entry).await {
+                    error!("Qdrant Store failed: {}", e);
+                }
             }
             Err(e) => {
                 error!("Failed to parse messgae: {}", e);
@@ -50,6 +73,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 
+}
+
+/// Setuping the qdrant collection like creating a table
+
+async fn setup_qdrant_collection(qdrant: &Qdrant) -> Result<(), Box<dyn std::error::Error>> {
+    // check if collection already exists or not
+    let collection = qdrant.list_collections().await?;
+    let exists = collection
+    .collections
+    .iter()
+    .any(|c| c.name == COLLECTION_NAME);
+
+    if !exists {
+        info!("Creating Qdrant collection: {}", COLLECTION_NAME);
+        qdrant
+        .create_collection(
+            CreateCollectionBuilder::new(COLLECTION_NAME)
+                        .vectors_config(VectorParamsBuilder::new(VECTOR_SIZE, Distance::Cosine))
+        )
+        .await?;
+    info!("Collection Created");
+    } else {
+        info!("Qdrant collection already exists");
+    }
+    Ok(())
+}
+
+/// Generate embedding for a log and store in Qdrant
+
+async fn embed_and_store(
+    model: &mut TextEmbedding,
+    qdrant: &Qdrant,
+    entry: &LogEntry,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Create text to embed: combine service + Level + message
+    let text_to_embed = format!(
+        "service:{} level:{:?} {}",
+        entry.service, entry.level, entry.message
+    );
+
+    // Generate embedding (text -> 384D vector)
+    let documents: Vec<String> = vec![text_to_embed.clone()];
+    let embeddings = model.embed(documents, None)?;
+    let vector = embeddings.into_iter().next().ok_or("No embeddings generated")?;
+
+    if vector.is_empty() {
+        return Err("Embedding returned empty vector".into());
+    }
+    info!("Generated embedding with {} dimensions", vector.len());
+
+    // Create point with metadata (payload)
+    let payload: Payload = json!({
+        "log_id": entry.id.to_string(),
+        "service": entry.service,
+        "level": format!("{:?}", entry.level),
+        "message": entry.message,
+        "timestamp": entry.timestamp.to_rfc3339(),
+    })
+    .try_into()
+    .unwrap();
+
+    let point = PointStruct::new(entry.id.to_string(), vector, payload,);
+
+    //Upsert (insert or update) into the Qdrant
+    qdrant.upsert_points(UpsertPointsBuilder::new(COLLECTION_NAME, vec![point]).wait(true)).await?;
+
+    info!(id = %entry.id, "Embedded & stored in Qdrant");
+    Ok(())
 }
 
 async fn create_logs_table(client: &Client) -> Result<(), clickhouse::error::Error> {

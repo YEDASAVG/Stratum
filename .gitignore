@@ -22,3 +22,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Embedding model cache (fastembed downloads ~90MB models here)
+.fastembed_cache/

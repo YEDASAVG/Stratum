@@ -26,3 +26,9 @@ tracing-subscriber = "0.3"
 
 #futures for stream processing
 futures = "0.3"
+
+#embedding generation (local, no API key needed)
+fastembed = "5"
+
+#Qdrant vector database client
+qdrant-client = "1.13"

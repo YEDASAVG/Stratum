@@ -26,7 +26,7 @@ services:
 
   #Vector Database
   qdrant:
-    image: qdrant/qdrant:v1.7.4
+    image: qdrant/qdrant:v1.15.0
     ports:
       - "6333:6333"  # gRPC interface
       - "6334:6334"  # REST API
