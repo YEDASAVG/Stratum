@@ -1,0 +1,42 @@
+# LogAI Anomaly Detection Configuration
+
+check_interval_seconds = 60
+
+[slack]
+enabled = false
+webhook_url = ""
+
+[[rules]]
+# Rules will go here
+
+#example rule 1: Error Spike Detection (statistical method)
+name = "Error Spike"
+enabled = true
+services = ["*"]
+
+[rules.detection]
+type = "statistical"
+metric = "error_count"
+sensitivity = "medium"
+baseline_window_minutes = 60
+
+[rules.alert]
+severity = "warning"
+cooldown_minutes = 10
+
+#example rule 2:  Service down Detection (threshold-based)
+[[rules]]
+name = "Service Down"
+enabled = true
+services = ["payment-service", "auth-service"]
+
+[rules.detection]
+type = "threshold"
+metric = "log_volume"
+operator = "<"
+value = 5.0
+window_minutes = 5
+
+[rules.alert]
+severity = "critical"
+cooldown_minutes = 5

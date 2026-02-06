@@ -5,4 +5,5 @@ members = [
     "crates/logai-api",
     "crates/logai-cli",
     "crates/logai-worker",
+    "crates/logai-anomaly",
 ]

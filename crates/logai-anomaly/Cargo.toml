@@ -1,0 +1,31 @@
+[package]
+name = "logai-anomaly"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Core types
+logai-core = { path = "../logai-core" }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# ClickHouse client
+clickhouse = { version = "0.14.2", features = ["lz4"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.9.8"
+
+# HTTP client (Slack webhooks)
+reqwest = { version = "0.13.1", features = ["json"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+
+# UUID for alert IDs
+uuid = { version = "1.0", features = ["v4", "serde"] }
