@@ -86,9 +86,11 @@ impl AnomalyDetector {
         Ok(anomalies)
     }
 
-
     // Get list of services matching the patterns
-    async fn get_services(&self, patterns: &[String]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    async fn get_services(
+        &self,
+        patterns: &[String],
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         //if pattern is * then get all services otherwise filter by pattern
 
         let has_wildcard = patterns.iter().any(|p| p == "*");
@@ -96,12 +98,8 @@ impl AnomalyDetector {
         if has_wildcard {
             // Get all unique services from logs
             let query = "SELECT DISTINCT service FROM logs";
-            let services: Vec<String> = self
-            .clickhouse
-            .query(query)
-            .fetch_all::<String>()
-            .await?;
-        Ok(services)
+            let services: Vec<String> = self.clickhouse.query(query).fetch_all::<String>().await?;
+            Ok(services)
         } else {
             // Return the specific services listed
             Ok(patterns.to_vec())
@@ -121,14 +119,22 @@ impl AnomalyDetector {
         let current = self.get_metric(service, metric, 5).await?;
 
         // get baseline (avg and stddev)
-        let (avg, stddev) = self.get_baseline(service, metric, baseline_windows_minutes).await?;
+        let (avg, stddev) = self
+            .get_baseline(service, metric, baseline_windows_minutes)
+            .await?;
 
         // calculate threshold
         let sigma = sensitivity.to_sigma();
         let threshold = avg + (sigma * stddev);
 
         // check if anomaly
-        if current > threshold && stddev > 0.0 {
+        let is_anomaly = if stddev > 0.0 {
+            current > threshold
+        } else {
+            current > 15.0
+        };
+
+        if is_anomaly {
             let message = format!(
                 "{} spike detected: current={:.1}, expected={:.1} (threshold={:.1})",
                 metric_name(metric),
@@ -145,7 +151,7 @@ impl AnomalyDetector {
                 message,
                 current_value: current,
                 expected_value: avg,
-                detected_at:Utc::now(),
+                detected_at: Utc::now(),
             }))
         } else {
             Ok(None)
@@ -167,23 +173,24 @@ impl AnomalyDetector {
         let current = self.get_metric(service, metric, window_minutes).await?;
 
         // check using operator
-        if operator.evaluate(current, value){
-            let message = format!("{} threshold breached: current={:.1} {} {:.1}",
+        if operator.evaluate(current, value) {
+            let message = format!(
+                "{} threshold breached: current={:.1} {} {:.1}",
                 metric_name(metric),
                 current,
                 operator_symbol(&operator),
                 value,
-        );
-        Ok(Some(Anomaly {
-            id: Uuid::new_v4(),
-            rule_name: rule.name.clone(),
-            service: service.to_string(),
-            severity: rule.alert.severity,
-            message,
-            current_value: current,
-            expected_value: value,
-            detected_at: Utc::now(),
-        }))
+            );
+            Ok(Some(Anomaly {
+                id: Uuid::new_v4(),
+                rule_name: rule.name.clone(),
+                service: service.to_string(),
+                severity: rule.alert.severity,
+                message,
+                current_value: current,
+                expected_value: value,
+                detected_at: Utc::now(),
+            }))
         } else {
             Ok(None)
         }
@@ -199,37 +206,32 @@ impl AnomalyDetector {
         let query = match metric {
             Metric::ErrorCount => {
                 format!(
-                    "SELECT count(*) FROM logs 
-                     WHERE service = '{}' 
-                     AND level = 'Error'
-                     AND timestamp > now() - INTERVAL {} MINUTE",
-                     service, minutes
+                    "SELECT toFloat64(count(*)) FROM logs WHERE service = '{}' AND level = 'Error' AND timestamp > now() - INTERVAL {} MINUTE",
+                    service, minutes
                 )
             }
             Metric::ErrorRate => {
                 format!(
-                    "SELECT countIf(level = 'Error') * 100.0 / count(*) FROM logs 
-                     WHERE service = '{}' 
-                     AND timestamp > now() - INTERVAL {} MINUTE",
+                    "SELECT countIf(level = 'Error') * 100.0 / count(*) FROM logs WHERE service = '{}' AND timestamp > now() - INTERVAL {} MINUTE",
                     service, minutes
                 )
             }
             Metric::LogVolume => {
                 format!(
-                    "SELECT count(*) FROM logs 
-                     WHERE service = '{}' 
-                     AND timestamp > now() - INTERVAL {} MINUTE",
+                    "SELECT toFloat64(count(*)) FROM logs WHERE service = '{}' AND timestamp > now() - INTERVAL {} MINUTE",
                     service, minutes
                 )
             }
         };
+        
         let result: f64 = self
             .clickhouse
             .query(&query)
             .fetch_one()
             .await
             .unwrap_or(0.0);
-            Ok(result)
+        
+        Ok(result)
     }
 
     // Get baseline avg and std deviation from clikchouse
@@ -258,11 +260,11 @@ impl AnomalyDetector {
         );
         // this return two values: avg and stddev
         let result: (f64, f64) = self
-        .clickhouse
-        .query(&query)
-        .fetch_one()
-        .await
-        .unwrap_or((0.0, 0.0));
+            .clickhouse
+            .query(&query)
+            .fetch_one()
+            .await
+            .unwrap_or((0.0, 0.0));
 
         Ok(result)
     }

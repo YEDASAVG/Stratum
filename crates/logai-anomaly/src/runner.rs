@@ -47,4 +47,40 @@ impl AnomalyRunner {
             slack_client,
         })
     }
+
+    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let check_interval = Duration::from_secs(self.config.check_interval_seconds);
+        let mut ticker = interval(check_interval);
+
+        println!("Starting anomaly detection loop (interval: {}s",
+        self.config.check_interval_seconds);
+
+        loop {
+            ticker.tick().await;
+
+            // check each rule
+            for rule in &self.config.rules {
+                match self.detector.check_rule(rule).await {
+                    Ok(anomalies) => {
+                        if !anomalies.is_empty() {
+                            println!("Detected {} anomalies for rule '{}", anomalies.len(), rule.name);
+
+                            // process through alerts engine deduplication
+                            let alerts = self.alert_engine.process_anomalies(anomalies);
+
+                            // send to Slack
+                            for alert in alerts {
+                                if let Err(e) = self.slack_client.send_alert(&alert).await {
+                                    eprintln!("Failed to send Slack alert: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error checking rule '{}': {}", rule.name, e);
+                    }
+                }
+            }
+        }
+    }
 }
