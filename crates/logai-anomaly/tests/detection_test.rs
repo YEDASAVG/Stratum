@@ -85,9 +85,11 @@ async fn test_alert_engine() {
 
 #[tokio::test]
 async fn test_slack_client() {
-    let webhook_url = "https://hooks.slack.com/services/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";
+    dotenv::dotenv().ok();
+    let webhook_url = std::env::var("SLACK_WEBHOOK_URL")
+        .expect("SLACK_WEBHOOK_URL must be set for this test");
 
-    let client = SlackClient::new(webhook_url.to_string(), true);
+    let client = SlackClient::new(webhook_url, true);
 
     let alert = logai_anomaly::alerting::ActiveAlert {
         id: Uuid::new_v4(),

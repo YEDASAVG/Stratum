@@ -25,3 +25,5 @@ Thumbs.db
 
 # Embedding model cache (fastembed downloads ~90MB models here)
 .fastembed_cache/
+
+*.tar.gz

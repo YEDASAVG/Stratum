@@ -6,6 +6,7 @@ use axum::{
 };
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use logai_core::{LogEntry, RawLogEntry};
+use logai_core::parser::{ApacheParser, NginxParser, SyslogParser, ParserRegistry};
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::SearchPointsBuilder;
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,7 @@ struct AppState {
     nats: async_nats::Client,
     qdrant: Qdrant,
     model: Mutex<TextEmbedding>,
+    parser_registry: ParserRegistry,
 }
 
 /// Ingest Endpoint
@@ -57,6 +59,65 @@ async fn ingest_log(
 struct IngestResponse {
     id: String,
     status: String,
+}
+
+// Raw log request (for parsing)
+#[derive(Deserialize)]
+struct RawLogRequest {
+    format: String,      // "apache", "nginx", "syslog"
+    service: String,     // Service name
+    lines: Vec<String>,  // Raw log lines
+}
+
+#[derive(Serialize)]
+struct RawIngestResponse {
+    total: usize,
+    parsed: usize,
+    failed: usize,
+}
+
+/// Raw Log Ingest Endpoint - Parses logs before ingestion
+async fn ingest_raw_log(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RawLogRequest>,
+) -> Result<Json<RawIngestResponse>, (StatusCode, String)> {
+    let total = req.lines.len();
+    let mut parsed = 0;
+    let mut failed = 0;
+
+    for line in req.lines {
+        // Parse using registry
+        match state.parser_registry.parse(&req.format, &line) {
+            Ok(mut raw) => {
+                // Override service from request
+                raw.service = Some(req.service.clone());
+
+                // Convert to LogEntry and publish
+                let entry = LogEntry::from_raw(raw);
+                let payload = serde_json::to_vec(&entry)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+                state
+                    .nats
+                    .publish("logs.ingest", payload.into())
+                    .await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+                parsed += 1;
+            }
+            Err(_) => {
+                failed += 1;
+            }
+        }
+    }
+
+    info!(total, parsed, failed, format = %req.format, "Raw logs ingested");
+
+    Ok(Json(RawIngestResponse {
+        total,
+        parsed,
+        failed,
+    }))
 }
 
 /// Search ENdpoint
@@ -162,15 +223,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))?;
     info!("Model loaded!");
 
+    // Setup parser registry
+    info!("Setting up parser registry...");
+    let mut parser_registry = ParserRegistry::new();
+    parser_registry.register(Box::new(ApacheParser::new()));
+    parser_registry.register(Box::new(NginxParser::new()));
+    parser_registry.register(Box::new(SyslogParser::new()));
+    info!("Parsers registered: apache, nginx, syslog");
+
     let state = Arc::new(AppState {
         nats,
         qdrant,
         model: Mutex::new(model),
+        parser_registry,
     });
 
     //routes
     let app = Router::new()
         .route("/api/logs", post(ingest_log))
+        .route("/api/logs/raw", post(ingest_raw_log))
         .route("/api/search", get(search_logs))
         .with_state(state);
 

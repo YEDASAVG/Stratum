@@ -29,3 +29,6 @@ tracing = "0.1"
 
 # UUID for alert IDs
 uuid = { version = "1.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+dotenv = "0.15.0"

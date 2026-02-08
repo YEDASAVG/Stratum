@@ -1,5 +1,6 @@
 //! Core types for log intelligence system
 //! this crate contains shared data strcture used acrosss all components.
+pub mod parser;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
