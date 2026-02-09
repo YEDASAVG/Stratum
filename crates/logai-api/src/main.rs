@@ -7,7 +7,6 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
-use chrono::Utc;
 use clickhouse::Client as ClickHouseClient;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use logai_core::parser::{ApacheParser, NginxParser, ParserRegistry, SyslogParser};
@@ -16,11 +15,26 @@ use logai_rag::{RagEngine, RagConfig, Reranker};
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{Condition, Filter, Range, SearchPointsBuilder};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use tracing::info;
 
 const COLLECTION_NAME: &str = "log_embeddings";
+
+/// Conversation session for chat
+#[derive(Clone, Debug)]
+struct ChatSession {
+    history: Vec<ChatMessage>,
+    last_logs: Vec<String>,
+    created_at: std::time::Instant,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ChatMessage {
+    role: String, // "user" or "assistant"
+    content: String,
+}
 
 // App state - Shared across handlers
 struct AppState {
@@ -31,6 +45,7 @@ struct AppState {
     parser_registry: ParserRegistry,
     rag_engine: RagEngine,
     reranker: Reranker,
+    sessions: RwLock<HashMap<String, ChatSession>>,
 }
 
 /// Ingest Endpoint
@@ -660,6 +675,230 @@ async fn get_anomalies(
     }))
 }
 
+/// Chat Endpoint - Interactive debugging with conversation memory
+#[derive(Deserialize)]
+struct ChatRequest {
+    session_id: String,
+    message: String,
+    #[serde(default)]
+    history: Vec<ChatMessage>,
+}
+
+#[derive(Serialize)]
+struct ChatApiResponse {
+    answer: String,
+    sources_count: usize,
+    response_time_ms: u128,
+    provider: String,
+    context_logs: usize,
+    conversation_turn: usize,
+}
+
+async fn chat_logs(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ChatRequest>,
+) -> Result<Json<ChatApiResponse>, (StatusCode, String)> {
+    let start = Instant::now();
+    info!(session = %req.session_id, message = %req.message, "CHAT request");
+
+    // Get or create session
+    let (history, turn) = {
+        let mut sessions = state.sessions.write().unwrap();
+        let session = sessions.entry(req.session_id.clone()).or_insert_with(|| {
+            ChatSession {
+                history: Vec::new(),
+                last_logs: Vec::new(),
+                created_at: std::time::Instant::now(),
+            }
+        });
+        
+        // Merge incoming history with stored history
+        if !req.history.is_empty() && session.history.is_empty() {
+            session.history = req.history.clone();
+        }
+        
+        (session.history.clone(), session.history.len() / 2 + 1)
+    };
+
+    // Step 1: Analyze query to extract filters
+    let analyzed = state.rag_engine.analyze_query(&req.message);
+
+    // Step 2: Embed search query
+    let query_vector = {
+        let mut model = state.model.lock().unwrap();
+        let embeddings = model
+            .embed(vec![analyzed.search_query.clone()], None)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        embeddings.into_iter().next().ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "No embedding".to_string(),
+        ))?
+    };
+
+    // Step 3: Build filters from analyzed query
+    let mut conditions = vec![];
+    if let Some(from) = analyzed.from {
+        conditions.push(Condition::range(
+            "timestamp_unix",
+            Range {
+                gte: Some(from.timestamp() as f64),
+                ..Default::default()
+            },
+        ));
+    }
+    if let Some(ref service) = analyzed.service {
+        conditions.push(Condition::matches_text("service", service.clone()));
+    }
+
+    let filter = if conditions.is_empty() {
+        None
+    } else {
+        Some(Filter::must(conditions))
+    };
+
+    // Step 4: Search Qdrant (get more for reranking)
+    let mut search_builder =
+        SearchPointsBuilder::new(COLLECTION_NAME, query_vector, 30).with_payload(true);
+    if let Some(f) = filter {
+        search_builder = search_builder.filter(f);
+    }
+
+    let results = state
+        .qdrant
+        .search_points(search_builder)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Step 5: Rerank logs
+    let logs_with_scores: Vec<(String, f32)> = results
+        .result
+        .iter()
+        .map(|point| (get_string(&point.payload, "message"), point.score))
+        .collect();
+
+    info!(logs_found = logs_with_scores.len(), "Logs retrieved for chat");
+
+    if logs_with_scores.is_empty() {
+        return Err((StatusCode::NOT_FOUND, "No relevant logs found".to_string()));
+    }
+
+    // Rerank and take top 10
+    let reranked = state.reranker.rerank(&req.message, logs_with_scores, 10);
+    let logs: Vec<String> = reranked.into_iter().map(|r| r.message).collect();
+    let context_logs = logs.len();
+
+    info!(reranked_count = logs.len(), "Logs reranked for chat");
+
+    // Step 6: Build conversation-aware prompt
+    let conversation_context = build_conversation_context(&history);
+    
+    // Query with conversation context
+    let full_query = if conversation_context.is_empty() {
+        req.message.clone()
+    } else {
+        format!(
+            "Previous conversation:\n{}\n\nCurrent question: {}",
+            conversation_context, req.message
+        )
+    };
+
+    // Call RAG engine with conversation context
+    let rag_response = state
+        .rag_engine
+        .query(&full_query, logs.clone())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Update session with new exchange
+    {
+        let mut sessions = state.sessions.write().unwrap();
+        if let Some(session) = sessions.get_mut(&req.session_id) {
+            session.history.push(ChatMessage {
+                role: "user".to_string(),
+                content: req.message.clone(),
+            });
+            session.history.push(ChatMessage {
+                role: "assistant".to_string(),
+                content: rag_response.answer.clone(),
+            });
+            session.last_logs = logs;
+            
+            // Keep history manageable (last 20 messages = 10 turns)
+            if session.history.len() > 20 {
+                session.history.drain(0..2);
+            }
+        }
+    }
+
+    let elapsed = start.elapsed().as_millis();
+    info!(
+        turn = turn,
+        sources = rag_response.sources_count,
+        provider = %rag_response.provider,
+        time_ms = elapsed,
+        "CHAT complete"
+    );
+
+    Ok(Json(ChatApiResponse {
+        answer: rag_response.answer,
+        sources_count: rag_response.sources_count,
+        response_time_ms: elapsed,
+        provider: rag_response.provider,
+        context_logs,
+        conversation_turn: turn,
+    }))
+}
+
+/// Build conversation context from history
+fn build_conversation_context(history: &[ChatMessage]) -> String {
+    if history.is_empty() {
+        return String::new();
+    }
+    
+    // Take last 6 messages (3 turns) for context
+    let recent: Vec<&ChatMessage> = history.iter().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
+    
+    recent
+        .iter()
+        .map(|msg| {
+            let role = if msg.role == "user" { "User" } else { "AI" };
+            format!("{}: {}", role, msg.content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Get session info (for debugging)
+#[derive(Deserialize)]
+struct SessionQuery {
+    session_id: String,
+}
+
+#[derive(Serialize)]
+struct SessionInfo {
+    session_id: String,
+    turns: usize,
+    last_logs_count: usize,
+    age_seconds: u64,
+}
+
+async fn get_session(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SessionQuery>,
+) -> Result<Json<SessionInfo>, (StatusCode, String)> {
+    let sessions = state.sessions.read().unwrap();
+    
+    match sessions.get(&params.session_id) {
+        Some(session) => Ok(Json(SessionInfo {
+            session_id: params.session_id,
+            turns: session.history.len() / 2,
+            last_logs_count: session.last_logs.len(),
+            age_seconds: session.created_at.elapsed().as_secs(),
+        })),
+        None => Err((StatusCode::NOT_FOUND, "Session not found".to_string())),
+    }
+}
+
 // API Key Authentication Middleware
 async fn require_api_key(
     request: Request<Body>,
@@ -743,6 +982,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         parser_registry,
         rag_engine,
         reranker,
+        sessions: RwLock::new(HashMap::new()),
     });
 
     //routes - protected routes with API key
@@ -751,6 +991,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/logs/raw", post(ingest_raw_log))
         .route("/api/search", get(search_logs))
         .route("/api/ask", get(ask_logs))
+        .route("/api/chat", post(chat_logs))
+        .route("/api/session", get(get_session))
         .route("/api/stats", get(get_stats))
         .route("/api/alerts", get(get_alerts))
         .route("/api/anomalies", get(get_anomalies))

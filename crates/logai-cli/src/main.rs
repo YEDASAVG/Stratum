@@ -4,8 +4,9 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use comfy_table::{Table, presets::UTF8_FULL};
 use serde::{Deserialize, Serialize};
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::process::Command as ProcessCommand;
+use uuid::Uuid;
 
 const DEFAULT_API_URL: &str = "http://localhost:3000";
 
@@ -96,6 +97,12 @@ enum Commands {
         #[arg(short, long)]
         service: Option<String>,
     },
+
+    /// Interactive chat mode for debugging
+    Chat {
+        /// Initial question (optional)
+        question: Option<String>,
+    },
 }
 
 // API Response types
@@ -172,6 +179,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Anomalies { service } => {
             check_anomalies(&client, &cli.api_url, service).await?;
+        }
+        Commands::Chat { question } => {
+            interactive_chat(&client, &cli.api_url, question).await?;
         }
     }
 
@@ -792,4 +802,301 @@ async fn check_anomalies(
 
     println!();
     Ok(())
+}
+
+// Chat types
+#[derive(Serialize)]
+struct ChatRequest {
+    session_id: String,
+    message: String,
+    history: Vec<ChatHistoryMessage>,
+}
+
+#[derive(Serialize)]
+struct ChatHistoryMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ChatResponse {
+    answer: String,
+    sources_count: usize,
+    response_time_ms: u128,
+    provider: String,
+    context_logs: usize,
+    conversation_turn: usize,
+}
+
+/// Interactive chat mode - the core debugging experience
+async fn interactive_chat(
+    client: &reqwest::Client,
+    api_url: &str,
+    initial_question: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Generate unique session ID
+    let session_id = uuid::Uuid::new_v4().to_string();
+    
+    // Print banner
+    println!();
+    println!("{}", "╔════════════════════════════════════════════════════════════════╗".cyan());
+    println!("{}", "║           🤖 LogAI Interactive Debugging Chat                  ║".cyan().bold());
+    println!("{}", "╠════════════════════════════════════════════════════════════════╣".cyan());
+    println!("{}", "║  Ask questions about your logs in natural language.            ║".cyan());
+    println!("{}", "║  The AI remembers conversation context for follow-up queries.  ║".cyan());
+    println!("{}", "║                                                                ║".cyan());
+    println!("{}", "║  Commands:                                                     ║".cyan());
+    println!("{}", "║    /help     - Show available commands                         ║".cyan());
+    println!("{}", "║    /clear    - Clear conversation history                      ║".cyan());
+    println!("{}", "║    /tips     - Show debugging tips                             ║".cyan());
+    println!("{}", "║    /status   - Show system status                              ║".cyan());
+    println!("{}", "║    /exit     - Exit chat                                       ║".cyan());
+    println!("{}", "╚════════════════════════════════════════════════════════════════╝".cyan());
+    println!();
+    println!("{} {}", "Session:".dimmed(), session_id[..8].yellow());
+    println!();
+
+    // Track conversation
+    let mut conversation_history: Vec<(String, String)> = Vec::new();
+    let mut last_sources = 0usize;
+
+    // Handle initial question if provided
+    if let Some(ref q) = initial_question {
+        process_chat_message(client, api_url, &session_id, q, &mut conversation_history, &mut last_sources).await?;
+    }
+
+    // REPL loop
+    let stdin = io::stdin();
+    loop {
+        // Print prompt
+        print!("{} ", "You:".green().bold());
+        io::stdout().flush()?;
+
+        // Read input
+        let mut input = String::new();
+        stdin.lock().read_line(&mut input)?;
+        let input = input.trim();
+
+        // Skip empty
+        if input.is_empty() {
+            continue;
+        }
+
+        // Handle commands
+        if input.starts_with('/') {
+            match input.to_lowercase().as_str() {
+                "/exit" | "/quit" | "/q" => {
+                    println!("\n{}", "Goodbye! Happy debugging! 👋".cyan());
+                    break;
+                }
+                "/help" | "/h" => {
+                    println!();
+                    println!("{}", "Available Commands:".yellow().bold());
+                    println!("  {}  - Show this help", "/help".cyan());
+                    println!("  {} - Start fresh conversation", "/clear".cyan());
+                    println!("  {}  - Show example questions", "/tips".cyan());
+                    println!("  {}  - Exit chat", "/exit".cyan());
+                    println!();
+                    println!("{}", "Example Questions:".yellow().bold());
+                    println!("  • {}", "What errors happened in the last hour?".dimmed());
+                    println!("  • {}", "Are there any timeout issues in payment-service?".dimmed());
+                    println!("  • {}", "What's causing the database connection failures?".dimmed());
+                    println!("  • {}", "Show me the error pattern for nginx".dimmed());
+                    println!("  • {}", "Why is auth-service failing?".dimmed());
+                    println!();
+                }
+                "/clear" | "/new" => {
+                    conversation_history.clear();
+                    println!("\n{} Starting fresh conversation.\n", "✓".green());
+                }
+                "/tips" => {
+                    println!();
+                    println!("{}", "🎯 Debugging Tips:".yellow().bold());
+                    println!();
+                    println!("  {}", "1. Start broad, then narrow down:".cyan());
+                    println!("     \"What are the main errors today?\"");
+                    println!("     → \"Tell me more about the timeout errors\"");
+                    println!("     → \"What service is causing most timeouts?\"");
+                    println!();
+                    println!("  {}", "2. Ask for root causes:".cyan());
+                    println!("     \"What's the root cause of these connection failures?\"");
+                    println!();
+                    println!("  {}", "3. Request correlations:".cyan());
+                    println!("     \"Are payment errors related to database issues?\"");
+                    println!();
+                    println!("  {}", "4. Ask for fixes:".cyan());
+                    println!("     \"How can I fix these timeout errors?\"");
+                    println!();
+                }
+                "/status" => {
+                    check_status(client, api_url).await?;
+                }
+                _ => {
+                    println!("{} Unknown command. Type {} for help.", "⚠".yellow(), "/help".cyan());
+                }
+            }
+            continue;
+        }
+
+        // Process as chat message
+        process_chat_message(client, api_url, &session_id, input, &mut conversation_history, &mut last_sources).await?;
+    }
+
+    Ok(())
+}
+
+async fn process_chat_message(
+    client: &reqwest::Client,
+    api_url: &str,
+    session_id: &str,
+    message: &str,
+    history: &mut Vec<(String, String)>,
+    last_sources: &mut usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!();
+    println!("{}", "Thinking...".dimmed());
+
+    let url = format!("{}/api/chat", api_url);
+    
+    // Build history messages
+    let mut history_messages = Vec::new();
+    for (q, a) in history.iter() {
+        history_messages.push(ChatHistoryMessage {
+            role: "user".to_string(),
+            content: q.clone(),
+        });
+        history_messages.push(ChatHistoryMessage {
+            role: "assistant".to_string(),
+            content: a.clone(),
+        });
+    }
+    
+    let request_body = ChatRequest {
+        session_id: session_id.to_string(),
+        message: message.to_string(),
+        history: history_messages,
+    };
+
+    let start = std::time::Instant::now();
+    
+    let response = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&request_body)
+        .send()
+        .await;
+
+    match response {
+        Ok(resp) if resp.status().is_success() => {
+            let result: ChatResponse = resp.json().await?;
+            let elapsed = start.elapsed().as_millis();
+
+            // Clear "Thinking..." and print answer
+            print!("\x1B[1A\x1B[2K"); // Move up and clear line
+            
+            println!("{}", "─".repeat(60).dimmed());
+            println!("{}", "AI:".cyan().bold());
+            println!();
+            
+            // Print answer with word wrapping
+            print_wrapped(&result.answer, 70);
+            
+            println!();
+            println!("{}", "─".repeat(60).dimmed());
+            println!(
+                "{} {} | {} {} | {} {}ms | {} {}",
+                "Sources:".dimmed(),
+                result.sources_count.to_string().yellow(),
+                "Turn:".dimmed(),
+                result.conversation_turn.to_string().cyan(),
+                "Time:".dimmed(),
+                elapsed.to_string().yellow(),
+                "Provider:".dimmed(),
+                result.provider.magenta()
+            );
+            println!();
+
+            // Store in history
+            history.push((message.to_string(), result.answer.clone()));
+            *last_sources = result.sources_count;
+
+            // Keep history manageable (last 10 turns)
+            if history.len() > 10 {
+                history.remove(0);
+            }
+        }
+        Ok(resp) => {
+            print!("\x1B[1A\x1B[2K");
+            let status = resp.status();
+            let error = resp.text().await.unwrap_or_default();
+            
+            if status.as_u16() == 404 {
+                // Fallback to /api/ask if /api/chat not available
+                println!("{} Chat API not available, using single-query mode.", "⚠".yellow());
+                println!("{}", "─".repeat(60).dimmed());
+                
+                // Use ask endpoint as fallback
+                let ask_url = format!("{}/api/ask?q={}", api_url, urlencoding::encode(message));
+                match client.get(&ask_url).send().await {
+                    Ok(ask_resp) if ask_resp.status().is_success() => {
+                        let result: AskResponse = ask_resp.json().await?;
+                        println!("{}", "AI:".cyan().bold());
+                        println!();
+                        print_wrapped(&result.answer, 70);
+                        println!();
+                        println!("{}", "─".repeat(60).dimmed());
+                        println!(
+                            "{} {} | {} {}ms",
+                            "Sources:".dimmed(),
+                            result.sources_count.to_string().yellow(),
+                            "Time:".dimmed(),
+                            result.response_time_ms.to_string().yellow()
+                        );
+                        println!();
+                        
+                        history.push((message.to_string(), result.answer.clone()));
+                    }
+                    _ => {
+                        println!("{} Could not get response.", "Error:".red().bold());
+                    }
+                }
+            } else {
+                println!("{} {} - {}", "Error:".red().bold(), status, error);
+            }
+        }
+        Err(e) => {
+            print!("\x1B[1A\x1B[2K");
+            println!("{} Connection failed: {}", "Error:".red().bold(), e);
+            println!("{}", "Make sure the API server is running (logai serve)".dimmed());
+        }
+    }
+
+    Ok(())
+}
+
+/// Print text with word wrapping
+fn print_wrapped(text: &str, width: usize) {
+    for line in text.lines() {
+        if line.len() <= width {
+            println!("  {}", line);
+        } else {
+            // Word wrap
+            let mut current_line = String::new();
+            for word in line.split_whitespace() {
+                if current_line.len() + word.len() + 1 > width {
+                    if !current_line.is_empty() {
+                        println!("  {}", current_line);
+                        current_line.clear();
+                    }
+                }
+                if !current_line.is_empty() {
+                    current_line.push(' ');
+                }
+                current_line.push_str(word);
+            }
+            if !current_line.is_empty() {
+                println!("  {}", current_line);
+            }
+        }
+    }
 }

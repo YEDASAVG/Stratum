@@ -184,22 +184,24 @@ impl RagEngine {
 
     fn build_prompt(&self, query: &str, context: &str) -> String {
         format!(
-            r#"You are a log analysis expert. Analyze the following logs and answer the user's question.
-
-USER QUESTION: {}
+            r#"You are an expert DevOps/SRE log analysis assistant helping debug production systems.
 
 RELEVANT LOGS:
 {}
 
+USER QUESTION: {}
+
 INSTRUCTIONS:
-1. Analyze the logs carefully
-2. Identify patterns, errors, or anomalies relevant to the question
-3. Provide a clear, concise answer
-4. If you see errors, explain the likely cause
-5. Suggest fixes if applicable
+1. Analyze the logs carefully, looking for patterns, errors, and anomalies
+2. Identify root causes when possible
+3. Provide clear, actionable insights
+4. If asked about errors, explain what went wrong and why
+5. Suggest specific fixes or next debugging steps when applicable
+6. For follow-up questions, use context from the conversation
+7. Be concise but thorough - developers need quick answers
 
 ANSWER:"#,
-            query, context
+            context, query
         )
     }
 }
