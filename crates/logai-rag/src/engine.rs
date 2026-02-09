@@ -1,6 +1,7 @@
 // RAG engine
 // Orchestrates: Query Analysis -> Semantic Search -> Context Building -> LLM response
 
+use crate::groq_client::{GroqClient, GroqError};
 use crate::llm_client::{LlmError, OllamaClient};
 use crate::query_analyzer::{AnalyzedQuery, QueryAnalyzer};
 use serde::{Deserialize, Serialize};
@@ -8,8 +9,11 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum RagError {
-    #[error("LLM error: {0}")]
-    Llm(#[from] LlmError),
+    #[error("Ollama error: {0}")]
+    Ollama(#[from] LlmError),
+
+    #[error("Groq error: {0}")]
+    Groq(#[from] GroqError),
 
     #[error("Search failed: {0}")]
     SearchFailed(String),
@@ -18,22 +22,65 @@ pub enum RagError {
     NoLogsFound,
 }
 
+/// LLM Provider selection
+#[derive(Debug, Clone, Default)]
+pub enum LlmProvider {
+    #[default]
+    Ollama,
+    Groq,
+}
+
 // RAG engine configuration
 #[derive(Debug, Clone)]
 pub struct RagConfig {
+    pub provider: LlmProvider,
     pub ollama_url: String,
-    pub model: String,
-    pub qdrant_url: String,
+    pub ollama_model: String,
+    pub groq_model: String,
     pub max_context_logs: usize,
 }
 
 impl Default for RagConfig {
     fn default() -> Self {
         Self {
+            provider: LlmProvider::Ollama,
             ollama_url: "http://localhost:11434".to_string(),
-            model: "qwen3:8b".to_string(),
-            qdrant_url: "http://localhost:6334".to_string(),
-            max_context_logs: 20,
+            ollama_model: "qwen3:8b".to_string(),
+            groq_model: "llama-3.3-70b-versatile".to_string(),
+            max_context_logs: 10,
+        }
+    }
+}
+
+impl RagConfig {
+    /// Create config for Groq provider
+    pub fn with_groq() -> Self {
+        Self {
+            provider: LlmProvider::Groq,
+            ..Default::default()
+        }
+    }
+
+    /// Create config for Ollama provider
+    pub fn with_ollama() -> Self {
+        Self {
+            provider: LlmProvider::Ollama,
+            ..Default::default()
+        }
+    }
+}
+
+/// LLM Backend - holds active client
+enum LlmBackend {
+    Ollama(OllamaClient),
+    Groq(GroqClient),
+}
+
+impl LlmBackend {
+    async fn generate(&self, prompt: &str) -> Result<String, RagError> {
+        match self {
+            LlmBackend::Ollama(client) => Ok(client.generate(prompt).await?),
+            LlmBackend::Groq(client) => Ok(client.generate(prompt).await?),
         }
     }
 }
@@ -44,6 +91,7 @@ pub struct RagResponse {
     pub answer: String,
     pub query_analysis: QueryAnalysis,
     pub sources_count: usize,
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,22 +102,41 @@ pub struct QueryAnalysis {
     pub service_filter: Option<String>,
 }
 
-// main RAg engine
+// main RAG engine
 pub struct RagEngine {
     config: RagConfig,
-    llm: OllamaClient,
+    backend: LlmBackend,
     analyzer: QueryAnalyzer,
 }
 
 impl RagEngine {
     pub fn new(config: RagConfig) -> Self {
-        let llm = OllamaClient::new(&config.ollama_url, &config.model);
+        let backend = match &config.provider {
+            LlmProvider::Ollama => {
+                let client = OllamaClient::new(&config.ollama_url, &config.ollama_model);
+                LlmBackend::Ollama(client)
+            }
+            LlmProvider::Groq => {
+                // Load from environment
+                let client = GroqClient::from_env(&config.groq_model)
+                    .expect("GROQ_API_KEY must be set for Groq provider");
+                LlmBackend::Groq(client)
+            }
+        };
         let analyzer = QueryAnalyzer::new();
 
         Self {
             config,
-            llm,
+            backend,
             analyzer,
+        }
+    }
+
+    /// Get provider name
+    fn provider_name(&self) -> String {
+        match &self.backend {
+            LlmBackend::Ollama(_) => "ollama".to_string(),
+            LlmBackend::Groq(_) => "groq".to_string(),
         }
     }
 
@@ -89,7 +156,7 @@ impl RagEngine {
 
         let prompt = self.build_prompt(user_query, &context); // Build prompt
 
-        let answer = self.llm.generate(&prompt).await?;
+        let answer = self.backend.generate(&prompt).await?;
 
         // Building the response
         Ok(RagResponse {
@@ -101,6 +168,7 @@ impl RagEngine {
                 service_filter: analyzed.service,
             },
             sources_count: logs.len(),
+            provider: self.provider_name(),
         })
     }
 

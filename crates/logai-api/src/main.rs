@@ -1,13 +1,18 @@
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Query, State},
-    http::StatusCode,
+    http::{Request, StatusCode},
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
 };
+use chrono::Utc;
+use clickhouse::Client as ClickHouseClient;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use logai_core::parser::{ApacheParser, NginxParser, ParserRegistry, SyslogParser};
 use logai_core::{LogEntry, RawLogEntry};
-use logai_rag::{RagEngine, RagConfig};
+use logai_rag::{RagEngine, RagConfig, Reranker};
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{Condition, Filter, Range, SearchPointsBuilder};
 use serde::{Deserialize, Serialize};
@@ -21,9 +26,11 @@ const COLLECTION_NAME: &str = "log_embeddings";
 struct AppState {
     nats: async_nats::Client,
     qdrant: Qdrant,
+    clickhouse: ClickHouseClient,
     model: Mutex<TextEmbedding>,
     parser_registry: ParserRegistry,
     rag_engine: RagEngine,
+    reranker: Reranker,
 }
 
 /// Ingest Endpoint
@@ -245,6 +252,7 @@ struct AskResponse {
     answer: String,
     sources_count: usize,
     response_time_ms: u128,
+    provider: String,
     query_analysis: QueryAnalysisResponse,
 }
 
@@ -289,7 +297,8 @@ async fn ask_logs(
         ));
     }
     if let Some(ref service) = analyzed.service {
-        conditions.push(Condition::matches("service", service.clone()));
+        // Use text match for substring matching (nginx matches stress-test-nginx)
+        conditions.push(Condition::matches_text("service", service.clone()));
     }
 
     let filter = if conditions.is_empty() {
@@ -298,9 +307,9 @@ async fn ask_logs(
         Some(Filter::must(conditions))
     };
 
-    // Step 4: Search Qdrant
+    // Step 4: Search Qdrant (get more for reranking)
     let mut search_builder =
-        SearchPointsBuilder::new(COLLECTION_NAME, query_vector, 10).with_payload(true);
+        SearchPointsBuilder::new(COLLECTION_NAME, query_vector, 30).with_payload(true);
     if let Some(f) = filter {
         search_builder = search_builder.filter(f);
     }
@@ -311,19 +320,24 @@ async fn ask_logs(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Step 5: Extract log messages for RAG context
-    let logs: Vec<String> = results
+    // Step 5: Rerank logs
+    let logs_with_scores: Vec<(String, f32)> = results
         .result
         .iter()
-        .map(|point| get_string(&point.payload, "message"))
+        .map(|point| (get_string(&point.payload, "message"), point.score))
         .collect();
 
-    info!(logs_found = logs.len(), "Logs retrieved from Qdrant");
+    info!(logs_found = logs_with_scores.len(), "Logs retrieved from Qdrant");
 
-    if logs.is_empty() {
+    if logs_with_scores.is_empty() {
         return Err((StatusCode::NOT_FOUND, "No relevant logs found".to_string()));
     }
 
+    // Rerank and take top 10
+    let reranked = state.reranker.rerank(&params.q, logs_with_scores, 10);
+    let logs: Vec<String> = reranked.into_iter().map(|r| r.message).collect();
+
+    info!(reranked_count = logs.len(), "Logs reranked");
     info!("Calling Ollama LLM...");
 
     // Step 6: Call RAG engine
@@ -334,12 +348,13 @@ async fn ask_logs(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let elapsed = start.elapsed().as_millis();
-    info!(sources = rag_response.sources_count, time_ms = elapsed, "ASK complete");
+    info!(sources = rag_response.sources_count, provider = %rag_response.provider, time_ms = elapsed, "ASK complete");
 
     Ok(Json(AskResponse {
         answer: rag_response.answer,
         sources_count: rag_response.sources_count,
         response_time_ms: elapsed,
+        provider: rag_response.provider,
         query_analysis: QueryAnalysisResponse {
             search_query: rag_response.query_analysis.search_query,
             time_filter: rag_response.query_analysis.time_filter,
@@ -359,8 +374,328 @@ fn get_string(
         .unwrap_or_default()
 }
 
+/// Stats Endpoint - System statistics
+#[derive(Serialize)]
+struct StatsResponse {
+    total_logs: u64,
+    logs_24h: u64,
+    error_count: u64,
+    services_count: u64,
+    embeddings_count: u64,
+    storage_mb: f64,
+}
+
+async fn get_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<StatsResponse>, (StatusCode, String)> {
+    info!("Stats request");
+
+    // Query ClickHouse for stats
+    let total_logs: u64 = state.clickhouse
+        .query("SELECT count(*) FROM logs")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let logs_24h: u64 = state.clickhouse
+        .query("SELECT count(*) FROM logs WHERE timestamp > now() - INTERVAL 1 DAY")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let error_count: u64 = state.clickhouse
+        .query("SELECT count(*) FROM logs WHERE level = 'Error'")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    let services_count: u64 = state.clickhouse
+        .query("SELECT count(DISTINCT service) FROM logs")
+        .fetch_one()
+        .await
+        .unwrap_or(0);
+
+    // Get embeddings count from Qdrant
+    let embeddings_count = match state.qdrant.collection_info(COLLECTION_NAME).await {
+        Ok(info) => info.result.map(|r| r.points_count.unwrap_or(0)).unwrap_or(0),
+        Err(_) => 0,
+    };
+
+    // Estimate storage (rough approximation)
+    let storage_mb = (total_logs as f64 * 0.5) / 1024.0; // ~0.5KB per log average
+
+    Ok(Json(StatsResponse {
+        total_logs,
+        logs_24h,
+        error_count,
+        services_count,
+        embeddings_count,
+        storage_mb,
+    }))
+}
+
+/// Alerts Endpoint - List active alerts
+#[derive(Deserialize)]
+struct AlertsQuery {
+    status: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AlertsResponse {
+    alerts: Vec<AlertItem>,
+}
+
+#[derive(Serialize)]
+struct AlertItem {
+    id: String,
+    service: String,
+    severity: String,
+    message: String,
+    status: String,
+    fired_at: String,
+}
+
+async fn get_alerts(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AlertsQuery>,
+) -> Result<Json<AlertsResponse>, (StatusCode, String)> {
+    info!(status = ?params.status, "Alerts request");
+
+    // Query ClickHouse for recent anomalies (simulating alerts)
+    // In production, you'd have a separate alerts table
+    let query = match &params.status {
+        Some(status) if status == "firing" => {
+            "SELECT service, level, message, timestamp 
+             FROM logs 
+             WHERE level = 'Error' 
+             AND timestamp > now() - INTERVAL 1 HOUR
+             ORDER BY timestamp DESC
+             LIMIT 20"
+        }
+        _ => {
+            "SELECT service, level, message, timestamp 
+             FROM logs 
+             WHERE level = 'Error' 
+             AND timestamp > now() - INTERVAL 24 HOUR
+             ORDER BY timestamp DESC
+             LIMIT 50"
+        }
+    };
+
+    let rows: Vec<(String, String, String, i64)> = state.clickhouse
+        .query(query)
+        .fetch_all()
+        .await
+        .unwrap_or_default();
+
+    let alerts: Vec<AlertItem> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, (service, level, message, ts))| {
+            let severity = if message.to_lowercase().contains("critical") || message.to_lowercase().contains("fatal") {
+                "critical"
+            } else if level == "Error" {
+                "warning"
+            } else {
+                "info"
+            };
+            
+            AlertItem {
+                id: format!("alert-{}", i),
+                service,
+                severity: severity.to_string(),
+                message: if message.len() > 100 { format!("{}...", &message[..97]) } else { message },
+                status: "firing".to_string(),
+                fired_at: chrono::DateTime::from_timestamp(ts / 1000, 0)
+                    .map(|dt| dt.format("%H:%M:%S").to_string())
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
+
+    info!(count = alerts.len(), "Alerts returned");
+
+    Ok(Json(AlertsResponse { alerts }))
+}
+
+/// Anomalies Endpoint - Check for anomalies
+#[derive(Deserialize)]
+struct AnomaliesQuery {
+    service: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AnomaliesResponse {
+    anomalies: Vec<AnomalyItem>,
+    checked_at: String,
+}
+
+#[derive(Serialize)]
+struct AnomalyItem {
+    service: String,
+    rule: String,
+    severity: String,
+    message: String,
+    current_value: f64,
+    expected_value: f64,
+}
+
+async fn get_anomalies(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AnomaliesQuery>,
+) -> Result<Json<AnomaliesResponse>, (StatusCode, String)> {
+    info!(service = ?params.service, "Anomalies request");
+
+    let mut anomalies = Vec::new();
+    let now = chrono::Utc::now();
+
+    // Get list of services
+    let services_query = match &params.service {
+        Some(s) => format!("SELECT DISTINCT service FROM logs WHERE service = '{}' LIMIT 20", s),
+        None => "SELECT DISTINCT service FROM logs LIMIT 20".to_string(),
+    };
+
+    let services: Vec<String> = state.clickhouse
+        .query(&services_query)
+        .fetch_all()
+        .await
+        .unwrap_or_default();
+
+    // Check each service for anomalies
+    for service in services {
+        // Get error count in last 5 minutes
+        let current_errors: u64 = state.clickhouse
+            .query(&format!(
+                "SELECT count(*) FROM logs WHERE service = '{}' AND level = 'Error' AND timestamp > now() - INTERVAL 5 MINUTE",
+                service
+            ))
+            .fetch_one()
+            .await
+            .unwrap_or(0);
+
+        // Get average error count per 5-minute window in last hour (baseline)
+        let baseline_errors: f64 = state.clickhouse
+            .query(&format!(
+                "SELECT avg(error_count) FROM (
+                    SELECT count(*) as error_count 
+                    FROM logs 
+                    WHERE service = '{}' AND level = 'Error' 
+                    AND timestamp > now() - INTERVAL 1 HOUR
+                    GROUP BY toStartOfFiveMinutes(timestamp)
+                )",
+                service
+            ))
+            .fetch_one()
+            .await
+            .unwrap_or(0.0);
+
+        // Detect spike: current > 2x baseline (and baseline > 0)
+        if baseline_errors > 0.0 && (current_errors as f64) > baseline_errors * 2.0 {
+            let severity = if (current_errors as f64) > baseline_errors * 5.0 {
+                "critical"
+            } else {
+                "warning"
+            };
+
+            anomalies.push(AnomalyItem {
+                service: service.clone(),
+                rule: "Error Spike".to_string(),
+                severity: severity.to_string(),
+                message: format!(
+                    "Error count spike: {} errors in last 5 min (baseline: {:.1})",
+                    current_errors, baseline_errors
+                ),
+                current_value: current_errors as f64,
+                expected_value: baseline_errors,
+            });
+        }
+
+        // Get log volume in last 5 minutes
+        let current_volume: u64 = state.clickhouse
+            .query(&format!(
+                "SELECT count(*) FROM logs WHERE service = '{}' AND timestamp > now() - INTERVAL 5 MINUTE",
+                service
+            ))
+            .fetch_one()
+            .await
+            .unwrap_or(0);
+
+        // Get average volume
+        let baseline_volume: f64 = state.clickhouse
+            .query(&format!(
+                "SELECT avg(log_count) FROM (
+                    SELECT count(*) as log_count 
+                    FROM logs 
+                    WHERE service = '{}' 
+                    AND timestamp > now() - INTERVAL 1 HOUR
+                    GROUP BY toStartOfFiveMinutes(timestamp)
+                )",
+                service
+            ))
+            .fetch_one()
+            .await
+            .unwrap_or(0.0);
+
+        // Detect volume drop: current < 10% of baseline
+        if baseline_volume > 10.0 && (current_volume as f64) < baseline_volume * 0.1 {
+            anomalies.push(AnomalyItem {
+                service: service.clone(),
+                rule: "Volume Drop".to_string(),
+                severity: "warning".to_string(),
+                message: format!(
+                    "Log volume dropped: {} logs in last 5 min (baseline: {:.1})",
+                    current_volume, baseline_volume
+                ),
+                current_value: current_volume as f64,
+                expected_value: baseline_volume,
+            });
+        }
+    }
+
+    info!(count = anomalies.len(), "Anomalies detected");
+
+    Ok(Json(AnomaliesResponse {
+        anomalies,
+        checked_at: now.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    }))
+}
+
+// API Key Authentication Middleware
+async fn require_api_key(
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, (StatusCode, &'static str)> {
+    // Get API key from environment (if not set, authentication is disabled)
+    let expected_key = std::env::var("LOGAI_API_KEY").ok();
+    
+    // If no API key configured, skip authentication
+    let Some(expected) = expected_key else {
+        return Ok(next.run(request).await);
+    };
+    
+    // If API key is empty, skip authentication
+    if expected.is_empty() {
+        return Ok(next.run(request).await);
+    }
+    
+    // Check for API key in header
+    let provided = request
+        .headers()
+        .get("X-API-Key")
+        .and_then(|v| v.to_str().ok());
+    
+    match provided {
+        Some(key) if key == expected => Ok(next.run(request).await),
+        Some(_) => Err((StatusCode::UNAUTHORIZED, "Invalid API key")),
+        None => Err((StatusCode::UNAUTHORIZED, "Missing X-API-Key header")),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load .env file
+    dotenvy::dotenv().ok();
+
     //logging setup
     tracing_subscriber::fmt::init();
 
@@ -373,6 +708,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Connecting to Qdrant...");
     let qdrant = Qdrant::from_url("http://localhost:6334").build()?;
     info!("Connected to Qdrant!");
+
+    // Connect to ClickHouse
+    info!("Connecting to ClickHouse...");
+    let clickhouse = ClickHouseClient::default()
+        .with_url("http://localhost:8123")
+        .with_database("logai");
+    info!("Connected to ClickHouse!");
 
     // Load embedding model
     info!("Loading embedding model...");
@@ -387,26 +729,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     parser_registry.register(Box::new(SyslogParser::new()));
     info!("Parsers registered: apache, nginx, syslog");
 
-    // Setup RAG engine
-    info!("Setting up RAG engine...");
-    let rag_engine = RagEngine::new(RagConfig::default());
+    // Setup RAG engine (using Groq for fast inference)
+    info!("Setting up RAG engine with Groq...");
+    let rag_engine = RagEngine::new(RagConfig::with_groq());
+    let reranker = Reranker::new();
     info!("RAG engine ready!");
 
     let state = Arc::new(AppState {
         nats,
         qdrant,
+        clickhouse,
         model: Mutex::new(model),
         parser_registry,
         rag_engine,
+        reranker,
     });
 
-    //routes
-    let app = Router::new()
+    //routes - protected routes with API key
+    let protected_routes = Router::new()
         .route("/api/logs", post(ingest_log))
         .route("/api/logs/raw", post(ingest_raw_log))
         .route("/api/search", get(search_logs))
         .route("/api/ask", get(ask_logs))
+        .route("/api/stats", get(get_stats))
+        .route("/api/alerts", get(get_alerts))
+        .route("/api/anomalies", get(get_anomalies))
+        .layer(middleware::from_fn(require_api_key));
+    
+    // Health endpoint without auth
+    let app = Router::new()
+        .route("/health", get(|| async { "ok" }))
+        .merge(protected_routes)
         .with_state(state);
+    
+    // Log if API key is enabled
+    if std::env::var("LOGAI_API_KEY").ok().filter(|k| !k.is_empty()).is_some() {
+        info!("API key authentication ENABLED");
+    } else {
+        info!("API key authentication DISABLED (set LOGAI_API_KEY to enable)");
+    }
 
     // Server start
     let addr = "0.0.0.0:3000";
