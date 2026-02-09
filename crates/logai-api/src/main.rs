@@ -5,12 +5,14 @@ use axum::{
     routing::{get, post},
 };
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use logai_core::parser::{ApacheParser, NginxParser, ParserRegistry, SyslogParser};
 use logai_core::{LogEntry, RawLogEntry};
-use logai_core::parser::{ApacheParser, NginxParser, SyslogParser, ParserRegistry};
+use logai_rag::{RagEngine, RagConfig};
 use qdrant_client::Qdrant;
-use qdrant_client::qdrant::SearchPointsBuilder;
+use qdrant_client::qdrant::{Condition, Filter, Range, SearchPointsBuilder};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tracing::info;
 
 const COLLECTION_NAME: &str = "log_embeddings";
@@ -21,6 +23,7 @@ struct AppState {
     qdrant: Qdrant,
     model: Mutex<TextEmbedding>,
     parser_registry: ParserRegistry,
+    rag_engine: RagEngine,
 }
 
 /// Ingest Endpoint
@@ -64,9 +67,9 @@ struct IngestResponse {
 // Raw log request (for parsing)
 #[derive(Deserialize)]
 struct RawLogRequest {
-    format: String,      // "apache", "nginx", "syslog"
-    service: String,     // Service name
-    lines: Vec<String>,  // Raw log lines
+    format: String,     // "apache", "nginx", "syslog"
+    service: String,    // Service name
+    lines: Vec<String>, // Raw log lines
 }
 
 #[derive(Serialize)]
@@ -127,6 +130,9 @@ struct SearchQuery {
     q: String,
     #[serde(default = "default_limit")]
     limit: u64,
+    from: Option<i64>,
+    to: Option<i64>,
+    service: Option<String>,
 }
 
 fn default_limit() -> u64 {
@@ -162,13 +168,49 @@ async fn search_logs(
         ))?
     };
 
+    // Build filter conditions
+    let mut conditions = vec![];
+
+    if let Some(from) = params.from {
+        conditions.push(Condition::range(
+            "timestamp_unix",
+            Range {
+                gte: Some(from as f64),
+                ..Default::default()
+            },
+        ));
+    }
+    if let Some(to) = params.to {
+        conditions.push(Condition::range(
+            "timestamp_unix",
+            Range {
+                lte: Some(to as f64),
+                ..Default::default()
+            },
+        ));
+    }
+    if let Some(ref service) = params.service {
+        conditions.push(Condition::matches("service", service.clone()));
+    }
+
+    let filter = if conditions.is_empty() {
+        None
+    } else {
+        Some(Filter::must(conditions))
+    };
+
     // Search in Qdrant
+
+    let mut search_builder =
+        SearchPointsBuilder::new(COLLECTION_NAME, query_vector, params.limit).with_payload(true);
+
+    if let Some(f) = filter {
+        search_builder = search_builder.filter(f);
+    }
+
     let results = state
         .qdrant
-        .search_points(
-            SearchPointsBuilder::new(COLLECTION_NAME, query_vector, params.limit)
-                .with_payload(true),
-        )
+        .search_points(search_builder)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -190,6 +232,120 @@ async fn search_logs(
         .collect();
     info!(results = search_results.len(), "Search Complete");
     Ok(Json(search_results))
+}
+
+/// ASK Endpoint - Natural language RAG query
+#[derive(Deserialize)]
+struct AskQuery {
+    q: String,
+}
+
+#[derive(Serialize)]
+struct AskResponse {
+    answer: String,
+    sources_count: usize,
+    response_time_ms: u128,
+    query_analysis: QueryAnalysisResponse,
+}
+
+#[derive(Serialize)]
+struct QueryAnalysisResponse {
+    search_query: String,
+    time_filter: Option<String>,
+    service_filter: Option<String>,
+}
+
+async fn ask_logs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AskQuery>,
+) -> Result<Json<AskResponse>, (StatusCode, String)> {
+    let start = Instant::now();
+    info!(query = %params.q, "ASK request");
+
+    // Step 1: Analyze query to extract filters
+    let analyzed = state.rag_engine.analyze_query(&params.q);
+
+    // Step 2: Embed search query
+    let query_vector = {
+        let mut model = state.model.lock().unwrap();
+        let embeddings = model
+            .embed(vec![analyzed.search_query.clone()], None)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        embeddings.into_iter().next().ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "No embedding".to_string(),
+        ))?
+    };
+
+    // Step 3: Build filters from analyzed query
+    let mut conditions = vec![];
+    if let Some(from) = analyzed.from {
+        conditions.push(Condition::range(
+            "timestamp_unix",
+            Range {
+                gte: Some(from.timestamp() as f64),
+                ..Default::default()
+            },
+        ));
+    }
+    if let Some(ref service) = analyzed.service {
+        conditions.push(Condition::matches("service", service.clone()));
+    }
+
+    let filter = if conditions.is_empty() {
+        None
+    } else {
+        Some(Filter::must(conditions))
+    };
+
+    // Step 4: Search Qdrant
+    let mut search_builder =
+        SearchPointsBuilder::new(COLLECTION_NAME, query_vector, 10).with_payload(true);
+    if let Some(f) = filter {
+        search_builder = search_builder.filter(f);
+    }
+
+    let results = state
+        .qdrant
+        .search_points(search_builder)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Step 5: Extract log messages for RAG context
+    let logs: Vec<String> = results
+        .result
+        .iter()
+        .map(|point| get_string(&point.payload, "message"))
+        .collect();
+
+    info!(logs_found = logs.len(), "Logs retrieved from Qdrant");
+
+    if logs.is_empty() {
+        return Err((StatusCode::NOT_FOUND, "No relevant logs found".to_string()));
+    }
+
+    info!("Calling Ollama LLM...");
+
+    // Step 6: Call RAG engine
+    let rag_response = state
+        .rag_engine
+        .query(&params.q, logs)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let elapsed = start.elapsed().as_millis();
+    info!(sources = rag_response.sources_count, time_ms = elapsed, "ASK complete");
+
+    Ok(Json(AskResponse {
+        answer: rag_response.answer,
+        sources_count: rag_response.sources_count,
+        response_time_ms: elapsed,
+        query_analysis: QueryAnalysisResponse {
+            search_query: rag_response.query_analysis.search_query,
+            time_filter: rag_response.query_analysis.time_filter,
+            service_filter: rag_response.query_analysis.service_filter,
+        },
+    }))
 }
 
 // Helper to extract string from payload
@@ -231,11 +387,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     parser_registry.register(Box::new(SyslogParser::new()));
     info!("Parsers registered: apache, nginx, syslog");
 
+    // Setup RAG engine
+    info!("Setting up RAG engine...");
+    let rag_engine = RagEngine::new(RagConfig::default());
+    info!("RAG engine ready!");
+
     let state = Arc::new(AppState {
         nats,
         qdrant,
         model: Mutex::new(model),
         parser_registry,
+        rag_engine,
     });
 
     //routes
@@ -243,6 +405,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/logs", post(ingest_log))
         .route("/api/logs/raw", post(ingest_raw_log))
         .route("/api/search", get(search_logs))
+        .route("/api/ask", get(ask_logs))
         .with_state(state);
 
     // Server start

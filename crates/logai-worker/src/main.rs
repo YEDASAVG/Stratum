@@ -130,6 +130,7 @@ async fn embed_and_store(
         "level": format!("{:?}", entry.level),
         "message": entry.message,
         "timestamp": entry.timestamp.to_rfc3339(),
+        "timestamp_unix": entry.timestamp.timestamp(),
     })
     .try_into()
     .unwrap();

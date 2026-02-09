@@ -2045,6 +2045,7 @@ dependencies = [
  "axum 0.8.8",
  "fastembed",
  "logai-core",
+ "logai-rag",
  "qdrant-client",
  "serde",
  "serde_json",
@@ -2079,6 +2080,21 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "logai-rag"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "logai-core",
+ "regex",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

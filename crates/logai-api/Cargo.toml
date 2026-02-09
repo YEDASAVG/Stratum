@@ -26,3 +26,6 @@ fastembed = "5"
 
 #Qdrant vector database client
 qdrant-client = "1.13"
+
+#RAG engine
+logai-rag = { path = "../logai-rag" }
