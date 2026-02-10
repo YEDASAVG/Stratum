@@ -27,12 +27,12 @@ const SERVICES: [&str; 5] = [
 #[command(name = "logai-simulate")]
 #[command(about = "Generate realistic logs for LogAI testing")]
 struct Args {
-    /// Scenario to simulate
-    #[arg(short, long, default_value = "normal")]
+    /// Scenario to simulate (realistic = random mix like real system)
+    #[arg(short, long, default_value = "realistic")]
     scenario: Scenario,
 
-    /// Interval between log batches (seconds)
-    #[arg(short, long, default_value = "3")]
+    /// Interval between logs (seconds)
+    #[arg(short, long, default_value = "10")]
     interval: u64,
 
     /// Error rate percentage (0-100)
@@ -51,6 +51,7 @@ struct Args {
 #[derive(Clone, Copy, Debug, ValueEnum, Default)]
 enum Scenario {
     #[default]
+    Realistic,      // Random mix of all scenarios (like real system)
     Normal,
     PaymentOutage,
     DatabaseSlow,
@@ -98,10 +99,12 @@ impl LogEntry {
 }
 
 struct SimulatorState {
-    phase: u32,           // Current phase of scenario
-    tick: u64,            // Ticks since start
-    error_rate: u8,       // Current error rate
-    base_latency: u64,    // Base latency for DB
+    phase: u32,
+    tick: u64,
+    error_rate: u8,
+    base_latency: u64,
+    active_scenario: Scenario,    // For Realistic mode
+    scenario_duration: u64,       // How long current scenario runs
 }
 
 impl Default for SimulatorState {
@@ -111,6 +114,8 @@ impl Default for SimulatorState {
             tick: 0,
             error_rate: 10,
             base_latency: 50,
+            active_scenario: Scenario::Normal,
+            scenario_duration: 0,
         }
     }
 }
@@ -156,10 +161,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         update_state(&args.scenario, &mut state);
 
         // Generate logs for this tick
-        let logs = generate_logs(&args.scenario, &mut state);
+        let all_logs = generate_logs(&args.scenario, &mut state);
+        
+        // Pick 1 random log from the batch
+        let logs: Vec<&LogEntry> = if all_logs.is_empty() {
+            vec![]
+        } else {
+            let idx = rand::rng().random_range(0..all_logs.len());
+            vec![&all_logs[idx]]
+        };
 
         // Send logs to API
-        for log in &logs {
+        for log in logs {
             match send_log(&client, log).await {
                 Ok(_) => {
                     let level = log.level.as_deref().unwrap_or("info");
@@ -193,6 +206,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn update_state(scenario: &Scenario, state: &mut SimulatorState) {
     match scenario {
+        Scenario::Realistic => {
+            // Random scenario switching like real system
+            let mut rng = rand::rng();
+            
+            // Check if current scenario duration expired
+            if state.scenario_duration == 0 {
+                // Pick new scenario with weighted probabilities
+                // Normal: 70%, Incidents: 30% total
+                let roll: u32 = rng.random_range(0..100);
+                state.active_scenario = if roll < 70 {
+                    Scenario::Normal
+                } else if roll < 80 {
+                    Scenario::PaymentOutage
+                } else if roll < 87 {
+                    Scenario::DatabaseSlow
+                } else if roll < 94 {
+                    Scenario::AuthAttack
+                } else {
+                    Scenario::HighTraffic
+                };
+                
+                // Set duration for this scenario (5-20 ticks)
+                state.scenario_duration = rng.random_range(5..20);
+                state.phase = 0;
+                state.error_rate = 10;
+                state.base_latency = 50;
+                
+                println!("  {} Scenario: {:?} (next {} ticks)", 
+                    "→".yellow(), state.active_scenario, state.scenario_duration);
+            }
+            
+            state.scenario_duration = state.scenario_duration.saturating_sub(1);
+            
+            // Apply active scenario logic
+            update_state(&state.active_scenario.clone(), state);
+        }
         Scenario::Normal => {
             // Stable state
         }
@@ -235,11 +284,17 @@ fn generate_logs(scenario: &Scenario, state: &mut SimulatorState) -> Vec<LogEntr
     let mut logs = Vec::new();
     let mut rng = rand::rng();
     
-    // Generate a request flow (correlated logs)
     let request_id = Uuid::new_v4().to_string()[..8].to_string();
     let user_id = format!("user_{}", rng.random_range(1000..9999));
 
-    match scenario {
+    // For Realistic mode, use the active_scenario
+    let active = match scenario {
+        Scenario::Realistic => &state.active_scenario.clone(),
+        other => other,
+    };
+
+    match active {
+        Scenario::Realistic => unreachable!(),
         Scenario::Normal => {
             logs.extend(generate_normal_flow(&request_id, &user_id, state, &mut rng));
         }
@@ -253,7 +308,6 @@ fn generate_logs(scenario: &Scenario, state: &mut SimulatorState) -> Vec<LogEntr
             logs.extend(generate_auth_attack_flow(&request_id, state, &mut rng));
         }
         Scenario::HighTraffic => {
-            // Multiple concurrent requests
             for _ in 0..5 {
                 let req_id = Uuid::new_v4().to_string()[..8].to_string();
                 logs.extend(generate_normal_flow(&req_id, &user_id, state, &mut rng));

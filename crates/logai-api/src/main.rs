@@ -22,12 +22,18 @@ use tracing::info;
 
 const COLLECTION_NAME: &str = "log_embeddings";
 
-/// Conversation session for chat
 #[derive(Clone, Debug)]
 struct ChatSession {
     history: Vec<ChatMessage>,
     last_logs: Vec<String>,
+    last_query: String,
     created_at: std::time::Instant,
+}
+
+#[derive(Debug, PartialEq)]
+enum QueryIntent {
+    NewSearch,
+    FollowUp,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -701,98 +707,99 @@ async fn chat_logs(
     let start = Instant::now();
     info!(session = %req.session_id, message = %req.message, "CHAT request");
 
-    // Get or create session
-    let (history, turn) = {
+    let (history, last_logs, last_query, turn) = {
         let mut sessions = state.sessions.write().unwrap();
         let session = sessions.entry(req.session_id.clone()).or_insert_with(|| {
             ChatSession {
                 history: Vec::new(),
                 last_logs: Vec::new(),
+                last_query: String::new(),
                 created_at: std::time::Instant::now(),
             }
         });
-        
-        // Merge incoming history with stored history
         if !req.history.is_empty() && session.history.is_empty() {
             session.history = req.history.clone();
         }
-        
-        (session.history.clone(), session.history.len() / 2 + 1)
+        (
+            session.history.clone(),
+            session.last_logs.clone(),
+            session.last_query.clone(),
+            session.history.len() / 2 + 1,
+        )
     };
 
-    // Step 1: Analyze query to extract filters
-    let analyzed = state.rag_engine.analyze_query(&req.message);
+    // Classify: follow-up or new search?
+    let intent = classify_query_intent(&state.rag_engine, &last_query, &req.message).await;
+    info!(intent = ?intent, "Query intent classified");
 
-    // Step 2: Embed search query
-    let query_vector = {
-        let mut model = state.model.lock().unwrap();
-        let embeddings = model
-            .embed(vec![analyzed.search_query.clone()], None)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        embeddings.into_iter().next().ok_or((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "No embedding".to_string(),
-        ))?
-    };
-
-    // Step 3: Build filters from analyzed query
-    let mut conditions = vec![];
-    if let Some(from) = analyzed.from {
-        conditions.push(Condition::range(
-            "timestamp_unix",
-            Range {
-                gte: Some(from.timestamp() as f64),
-                ..Default::default()
-            },
-        ));
-    }
-    if let Some(ref service) = analyzed.service {
-        conditions.push(Condition::matches_text("service", service.clone()));
-    }
-
-    let filter = if conditions.is_empty() {
-        None
+    let logs = if intent == QueryIntent::FollowUp && !last_logs.is_empty() {
+        info!("Using cached logs from previous turn");
+        last_logs
     } else {
-        Some(Filter::must(conditions))
+        // New search: embed -> search -> rerank
+        let analyzed = state.rag_engine.analyze_query(&req.message);
+        let query_vector = {
+            let mut model = state.model.lock().unwrap();
+            let embeddings = model
+                .embed(vec![analyzed.search_query.clone()], None)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            embeddings.into_iter().next().ok_or((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "No embedding".to_string(),
+            ))?
+        };
+
+        let mut conditions = vec![];
+        if let Some(from) = analyzed.from {
+            conditions.push(Condition::range(
+                "timestamp_unix",
+                Range {
+                    gte: Some(from.timestamp() as f64),
+                    ..Default::default()
+                },
+            ));
+        }
+        if let Some(ref service) = analyzed.service {
+            conditions.push(Condition::matches_text("service", service.clone()));
+        }
+
+        let filter = if conditions.is_empty() {
+            None
+        } else {
+            Some(Filter::must(conditions))
+        };
+
+        let mut search_builder =
+            SearchPointsBuilder::new(COLLECTION_NAME, query_vector, 30).with_payload(true);
+        if let Some(f) = filter {
+            search_builder = search_builder.filter(f);
+        }
+
+        let results = state
+            .qdrant
+            .search_points(search_builder)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let logs_with_scores: Vec<(String, f32)> = results
+            .result
+            .iter()
+            .map(|point| (get_string(&point.payload, "message"), point.score))
+            .collect();
+
+        info!(logs_found = logs_with_scores.len(), "Logs retrieved");
+
+        if logs_with_scores.is_empty() {
+            return Err((StatusCode::NOT_FOUND, "No relevant logs found".to_string()));
+        }
+
+        let reranked = state.reranker.rerank(&req.message, logs_with_scores, 10);
+        reranked.into_iter().map(|r| r.message).collect()
     };
 
-    // Step 4: Search Qdrant (get more for reranking)
-    let mut search_builder =
-        SearchPointsBuilder::new(COLLECTION_NAME, query_vector, 30).with_payload(true);
-    if let Some(f) = filter {
-        search_builder = search_builder.filter(f);
-    }
-
-    let results = state
-        .qdrant
-        .search_points(search_builder)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Step 5: Rerank logs
-    let logs_with_scores: Vec<(String, f32)> = results
-        .result
-        .iter()
-        .map(|point| (get_string(&point.payload, "message"), point.score))
-        .collect();
-
-    info!(logs_found = logs_with_scores.len(), "Logs retrieved for chat");
-
-    if logs_with_scores.is_empty() {
-        return Err((StatusCode::NOT_FOUND, "No relevant logs found".to_string()));
-    }
-
-    // Rerank and take top 10
-    let reranked = state.reranker.rerank(&req.message, logs_with_scores, 10);
-    let logs: Vec<String> = reranked.into_iter().map(|r| r.message).collect();
     let context_logs = logs.len();
-
-    info!(reranked_count = logs.len(), "Logs reranked for chat");
-
-    // Step 6: Build conversation-aware prompt
     let conversation_context = build_conversation_context(&history);
-    
-    // Query with conversation context
+
     let full_query = if conversation_context.is_empty() {
         req.message.clone()
     } else {
@@ -802,14 +809,12 @@ async fn chat_logs(
         )
     };
 
-    // Call RAG engine with conversation context
     let rag_response = state
         .rag_engine
         .query(&full_query, logs.clone())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Update session with new exchange
     {
         let mut sessions = state.sessions.write().unwrap();
         if let Some(session) = sessions.get_mut(&req.session_id) {
@@ -822,8 +827,7 @@ async fn chat_logs(
                 content: rag_response.answer.clone(),
             });
             session.last_logs = logs;
-            
-            // Keep history manageable (last 20 messages = 10 turns)
+            session.last_query = req.message.clone();
             if session.history.len() > 20 {
                 session.history.drain(0..2);
             }
@@ -849,15 +853,11 @@ async fn chat_logs(
     }))
 }
 
-/// Build conversation context from history
 fn build_conversation_context(history: &[ChatMessage]) -> String {
     if history.is_empty() {
         return String::new();
     }
-    
-    // Take last 6 messages (3 turns) for context
     let recent: Vec<&ChatMessage> = history.iter().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
-    
     recent
         .iter()
         .map(|msg| {
@@ -866,6 +866,26 @@ fn build_conversation_context(history: &[ChatMessage]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+async fn classify_query_intent(rag_engine: &RagEngine, last_query: &str, new_query: &str) -> QueryIntent {
+    if last_query.is_empty() {
+        return QueryIntent::NewSearch;
+    }
+
+    let prompt = format!(
+        r#"Previous query: "{}"
+New query: "{}"
+
+Is the new query a FOLLOW_UP (asking about same topic/logs) or NEW_SEARCH (different topic)?
+Answer with one word only: FOLLOW_UP or NEW_SEARCH"#,
+        last_query, new_query
+    );
+
+    match rag_engine.classify(&prompt).await {
+        Ok(response) if response.to_uppercase().contains("FOLLOW") => QueryIntent::FollowUp,
+        _ => QueryIntent::NewSearch,
+    }
 }
 
 /// Get session info (for debugging)
