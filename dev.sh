@@ -18,6 +18,17 @@ kill_services() {
   pkill -f "logai-simulate" 2>/dev/null || true
 }
 
+# Trap Ctrl+C and cleanup background processes
+cleanup() {
+  echo -e "\n${YELLOW}Shutting down...${NC}"
+  kill_services
+  # Kill any remaining child processes
+  jobs -p | xargs -r kill 2>/dev/null || true
+  echo -e "${GREEN}✓ All services stopped${NC}"
+  exit 0
+}
+trap cleanup SIGINT SIGTERM EXIT
+
 start_services() {
   RUST_LOG=info ./target/release/logai-api &
   sleep 1

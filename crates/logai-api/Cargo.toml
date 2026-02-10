@@ -9,6 +9,7 @@ logai-core = { path = "../logai-core" } # core type which we made
 #HTTP server
 axum = "0.8" # web framework liek express
 tokio = {version = "1", features = ["full"] } #async runtime
+tower-http = { version = "0.6", features = ["cors"] } # CORS middleware
 
 #serialization
 serde = { version = "1.0", features = ["derive"] }

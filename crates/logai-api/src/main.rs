@@ -7,6 +7,7 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
+use tower_http::cors::{CorsLayer, Any};
 use clickhouse::Client as ClickHouseClient;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use logai_core::parser::{ApacheParser, NginxParser, ParserRegistry, SyslogParser};
@@ -318,8 +319,8 @@ async fn ask_logs(
         ));
     }
     if let Some(ref service) = analyzed.service {
-        // Use text match for substring matching (nginx matches stress-test-nginx)
-        conditions.push(Condition::matches_text("service", service.clone()));
+        // Use keyword match for service filtering
+        conditions.push(Condition::matches("service", service.clone()));
     }
 
     let filter = if conditions.is_empty() {
@@ -452,6 +453,73 @@ async fn get_stats(
         embeddings_count,
         storage_mb,
     }))
+}
+
+/// Services Endpoint - List unique services
+async fn get_services(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    info!("Services request");
+
+    // Query ClickHouse for unique services
+    let services: Vec<String> = state.clickhouse
+        .query("SELECT DISTINCT service FROM logs ORDER BY service")
+        .fetch_all()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(services))
+}
+
+/// Recent Logs Endpoint - Get logs ordered by time (not semantic search)
+#[derive(Deserialize)]
+struct RecentLogsQuery {
+    limit: Option<u32>,
+    service: Option<String>,
+    level: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, clickhouse::Row)]
+struct RecentLogRow {
+    log_id: String,
+    service: String,
+    level: String,
+    message: String,
+    timestamp: String,
+}
+
+async fn get_recent_logs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RecentLogsQuery>,
+) -> Result<Json<Vec<RecentLogRow>>, (StatusCode, String)> {
+    let limit = params.limit.unwrap_or(100).min(500);
+    info!(limit, service = ?params.service, level = ?params.level, "Recent logs request");
+
+    let mut conditions = vec!["1=1".to_string()];
+    if let Some(ref service) = params.service {
+        conditions.push(format!("service = '{}'", service.replace('\'', "''")));
+    }
+    if let Some(ref level) = params.level {
+        conditions.push(format!("level = '{}'", level.replace('\'', "''")));
+    }
+
+    let query = format!(
+        "SELECT toString(id) as log_id, service, level, message, toString(timestamp) as timestamp 
+         FROM logs 
+         WHERE {} 
+         ORDER BY timestamp DESC 
+         LIMIT {}",
+        conditions.join(" AND "),
+        limit
+    );
+
+    let logs: Vec<RecentLogRow> = state.clickhouse
+        .query(&query)
+        .fetch_all()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(logs))
 }
 
 /// Alerts Endpoint - List active alerts
@@ -829,10 +897,10 @@ Answer YES or NO only."#,
             ));
         }
         if let Some(ref service) = analyzed.service {
-            conditions.push(Condition::matches_text("service", service.clone()));
+            conditions.push(Condition::matches("service", service.clone()));
         }
         if let Some(ref level) = analyzed.level {
-            conditions.push(Condition::matches_text("level", level.clone()));
+            conditions.push(Condition::matches("level", level.clone()));
         }
 
         let filter = if conditions.is_empty() {
@@ -1129,6 +1197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protected_routes = Router::new()
         .route("/api/logs", post(ingest_log))
         .route("/api/logs/raw", post(ingest_raw_log))
+        .route("/api/logs/recent", get(get_recent_logs))
         .route("/api/search", get(search_logs))
         .route("/api/ask", get(ask_logs))
         .route("/api/chat", post(chat_logs))
@@ -1136,12 +1205,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/stats", get(get_stats))
         .route("/api/alerts", get(get_alerts))
         .route("/api/anomalies", get(get_anomalies))
+        .route("/api/services", get(get_services))
         .layer(middleware::from_fn(require_api_key));
     
     // Health endpoint without auth
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+    
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .merge(protected_routes)
+        .layer(cors)
         .with_state(state);
     
     // Log if API key is enabled

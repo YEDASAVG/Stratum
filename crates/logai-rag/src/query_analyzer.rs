@@ -105,6 +105,21 @@ impl QueryAnalyzer {
         if query.contains("this month") {
             return (Some(now - Duration::days(30)), None);
         }
+        
+        // Handle "last hour" / "past hour" / "in the last hour" (without number)
+        if query.contains("last hour") || query.contains("past hour") || query.contains("the hour") {
+            return (Some(now - Duration::hours(1)), None);
+        }
+        if query.contains("last minute") || query.contains("past minute") {
+            return (Some(now - Duration::minutes(1)), None);
+        }
+        if query.contains("last day") || query.contains("past day") {
+            return (Some(now - Duration::days(1)), None);
+        }
+        if query.contains("recent") {
+            // "recent" = last 30 minutes
+            return (Some(now - Duration::minutes(30)), None);
+        }
 
         // Check for pattern-based time references
         for (pattern, multiplier, _) in &self.time_patterns {
