@@ -15,12 +15,15 @@ export $(grep -v '^#' .env | xargs)
 kill_services() {
   pkill -f "logai-api" 2>/dev/null || true
   pkill -f "logai-worker" 2>/dev/null || true
+  pkill -f "logai-simulate" 2>/dev/null || true
 }
 
 start_services() {
   RUST_LOG=info ./target/release/logai-api &
   sleep 1
   RUST_LOG=info ./target/release/logai-worker &
+  sleep 1
+  ./target/release/logai-simulate &
 }
 
 case "${1:-watch}" in
@@ -42,9 +45,11 @@ case "${1:-watch}" in
       cargo build --release 2>&1 | grep -E 'Compiling|Finished|error' || true
       pkill -f logai-api 2>/dev/null || true
       pkill -f logai-worker 2>/dev/null || true
+      pkill -f logai-simulate 2>/dev/null || true
       sleep 1
       RUST_LOG=info ./target/release/logai-api &
       RUST_LOG=info ./target/release/logai-worker &
+      ./target/release/logai-simulate &
       echo '✅ Restarted!'
     "
     ;;
@@ -65,6 +70,7 @@ case "${1:-watch}" in
   status)
     pgrep -f "logai-api" > /dev/null && echo -e "${GREEN}✓ API running${NC}" || echo -e "${RED}✗ API stopped${NC}"
     pgrep -f "logai-worker" > /dev/null && echo -e "${GREEN}✓ Worker running${NC}" || echo -e "${RED}✗ Worker stopped${NC}"
+    pgrep -f "logai-simulate" > /dev/null && echo -e "${GREEN}✓ Simulator running${NC}" || echo -e "${RED}✗ Simulator stopped${NC}"
     ;;
     
   *)

@@ -2,16 +2,12 @@
 // Orchestrates: Query Analysis -> Semantic Search -> Context Building -> LLM response
 
 use crate::groq_client::{GroqClient, GroqError};
-use crate::llm_client::{LlmError, OllamaClient};
 use crate::query_analyzer::{AnalyzedQuery, QueryAnalyzer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum RagError {
-    #[error("Ollama error: {0}")]
-    Ollama(#[from] LlmError),
-
     #[error("Groq error: {0}")]
     Groq(#[from] GroqError),
 
@@ -22,20 +18,9 @@ pub enum RagError {
     NoLogsFound,
 }
 
-/// LLM Provider selection
-#[derive(Debug, Clone, Default)]
-pub enum LlmProvider {
-    #[default]
-    Ollama,
-    Groq,
-}
-
 // RAG engine configuration
 #[derive(Debug, Clone)]
 pub struct RagConfig {
-    pub provider: LlmProvider,
-    pub ollama_url: String,
-    pub ollama_model: String,
     pub groq_model: String,
     pub max_context_logs: usize,
 }
@@ -43,9 +28,6 @@ pub struct RagConfig {
 impl Default for RagConfig {
     fn default() -> Self {
         Self {
-            provider: LlmProvider::Ollama,
-            ollama_url: "http://localhost:11434".to_string(),
-            ollama_model: "qwen3:8b".to_string(),
             groq_model: "llama-3.3-70b-versatile".to_string(),
             max_context_logs: 10,
         }
@@ -53,37 +35,28 @@ impl Default for RagConfig {
 }
 
 impl RagConfig {
-    /// Create config for Groq provider
-    pub fn with_groq() -> Self {
+    /// Create config from environment variables
+    /// 
+    /// Environment variables:
+    /// - LOGAI_GROQ_MODEL: Groq model name (default: "llama-3.3-70b-versatile")
+    /// - LOGAI_MAX_CONTEXT_LOGS: Max logs in context (default: 10)
+    pub fn from_env() -> Self {
+        let groq_model = std::env::var("LOGAI_GROQ_MODEL")
+            .unwrap_or_else(|_| "llama-3.3-70b-versatile".to_string());
+
+        let max_context_logs = std::env::var("LOGAI_MAX_CONTEXT_LOGS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10);
+
         Self {
-            provider: LlmProvider::Groq,
-            ..Default::default()
-        }
-    }
-
-    /// Create config for Ollama provider
-    pub fn with_ollama() -> Self {
-        Self {
-            provider: LlmProvider::Ollama,
-            ..Default::default()
+            groq_model,
+            max_context_logs,
         }
     }
 }
 
-/// LLM Backend - holds active client
-enum LlmBackend {
-    Ollama(OllamaClient),
-    Groq(GroqClient),
-}
 
-impl LlmBackend {
-    async fn generate(&self, prompt: &str) -> Result<String, RagError> {
-        match self {
-            LlmBackend::Ollama(client) => Ok(client.generate(prompt).await?),
-            LlmBackend::Groq(client) => Ok(client.generate(prompt).await?),
-        }
-    }
-}
 
 // RAG response with answer and sources
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,43 +73,26 @@ pub struct QueryAnalysis {
     pub search_query: String,
     pub time_filter: Option<String>,
     pub service_filter: Option<String>,
+    pub level_filter: Option<String>,
 }
 
 // main RAG engine
 pub struct RagEngine {
     config: RagConfig,
-    backend: LlmBackend,
+    client: GroqClient,
     analyzer: QueryAnalyzer,
 }
 
 impl RagEngine {
     pub fn new(config: RagConfig) -> Self {
-        let backend = match &config.provider {
-            LlmProvider::Ollama => {
-                let client = OllamaClient::new(&config.ollama_url, &config.ollama_model);
-                LlmBackend::Ollama(client)
-            }
-            LlmProvider::Groq => {
-                // Load from environment
-                let client = GroqClient::from_env(&config.groq_model)
-                    .expect("GROQ_API_KEY must be set for Groq provider");
-                LlmBackend::Groq(client)
-            }
-        };
+        let client = GroqClient::from_env(&config.groq_model)
+            .expect("GROQ_API_KEY must be set");
         let analyzer = QueryAnalyzer::new();
 
         Self {
             config,
-            backend,
+            client,
             analyzer,
-        }
-    }
-
-    /// Get provider name
-    fn provider_name(&self) -> String {
-        match &self.backend {
-            LlmBackend::Ollama(_) => "ollama".to_string(),
-            LlmBackend::Groq(_) => "groq".to_string(),
         }
     }
 
@@ -156,7 +112,7 @@ impl RagEngine {
 
         let prompt = self.build_prompt(user_query, &context); // Build prompt
 
-        let answer = self.backend.generate(&prompt).await?;
+        let answer = self.client.generate(&prompt).await?;
 
         // Building the response
         Ok(RagResponse {
@@ -166,9 +122,10 @@ impl RagEngine {
                 search_query: analyzed.search_query,
                 time_filter: analyzed.from.map(|t| t.to_rfc3339()),
                 service_filter: analyzed.service,
+                level_filter: analyzed.level,
             },
             sources_count: logs.len(),
-            provider: self.provider_name(),
+            provider: "groq".to_string(),
         })
     }
 
@@ -238,6 +195,6 @@ Start with a 1-line summary, then detailed analysis. No fluff."#,
     }
 
     pub async fn classify(&self, prompt: &str) -> Result<String, RagError> {
-        self.backend.generate(prompt).await
+        Ok(self.client.generate(prompt).await?)
     }
 }

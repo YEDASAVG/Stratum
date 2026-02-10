@@ -826,6 +826,8 @@ struct ChatResponse {
     provider: String,
     context_logs: usize,
     conversation_turn: usize,
+    #[serde(default)]
+    source_logs: Vec<String>,
 }
 
 /// Interactive chat mode - the core debugging experience
@@ -848,6 +850,7 @@ async fn interactive_chat(
     println!("{}", "║  Commands:                                                     ║".cyan());
     println!("{}", "║    /help     - Show available commands                         ║".cyan());
     println!("{}", "║    /clear    - Clear conversation history                      ║".cyan());
+    println!("{}", "║    /logs     - Show source logs from last query                ║".cyan());
     println!("{}", "║    /tips     - Show debugging tips                             ║".cyan());
     println!("{}", "║    /status   - Show system status                              ║".cyan());
     println!("{}", "║    /exit     - Exit chat                                       ║".cyan());
@@ -859,10 +862,11 @@ async fn interactive_chat(
     // Track conversation
     let mut conversation_history: Vec<(String, String)> = Vec::new();
     let mut last_sources = 0usize;
+    let mut last_source_logs: Vec<String> = Vec::new();
 
     // Handle initial question if provided
     if let Some(ref q) = initial_question {
-        process_chat_message(client, api_url, &session_id, q, &mut conversation_history, &mut last_sources).await?;
+        process_chat_message(client, api_url, &session_id, q, &mut conversation_history, &mut last_sources, &mut last_source_logs).await?;
     }
 
     // REPL loop
@@ -931,6 +935,20 @@ async fn interactive_chat(
                 "/status" => {
                     check_status(client, api_url).await?;
                 }
+                "/logs" => {
+                    if last_source_logs.is_empty() {
+                        println!("\n{} No logs from last query.\n", "⚠".yellow());
+                    } else {
+                        println!();
+                        println!("{}", "📋 Source Logs:".yellow().bold());
+                        println!("{}", "─".repeat(60).dimmed());
+                        for (i, log) in last_source_logs.iter().enumerate() {
+                            println!("{} {}", format!("[{}]", i + 1).dimmed(), log);
+                        }
+                        println!("{}", "─".repeat(60).dimmed());
+                        println!();
+                    }
+                }
                 _ => {
                     println!("{} Unknown command. Type {} for help.", "⚠".yellow(), "/help".cyan());
                 }
@@ -939,7 +957,7 @@ async fn interactive_chat(
         }
 
         // Process as chat message
-        process_chat_message(client, api_url, &session_id, input, &mut conversation_history, &mut last_sources).await?;
+        process_chat_message(client, api_url, &session_id, input, &mut conversation_history, &mut last_sources, &mut last_source_logs).await?;
     }
 
     Ok(())
@@ -952,6 +970,7 @@ async fn process_chat_message(
     message: &str,
     history: &mut Vec<(String, String)>,
     last_sources: &mut usize,
+    last_source_logs: &mut Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("{}", "Thinking...".dimmed());
@@ -1019,6 +1038,7 @@ async fn process_chat_message(
             // Store in history
             history.push((message.to_string(), result.answer.clone()));
             *last_sources = result.sources_count;
+            *last_source_logs = result.source_logs.clone();
 
             // Keep history manageable (last 10 turns)
             if history.len() > 10 {

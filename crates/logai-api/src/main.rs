@@ -359,7 +359,6 @@ async fn ask_logs(
     let logs: Vec<String> = reranked.into_iter().map(|r| r.message).collect();
 
     info!(reranked_count = logs.len(), "Logs reranked");
-    info!("Calling Ollama LLM...");
 
     // Step 6: Call RAG engine
     let rag_response = state
@@ -698,6 +697,7 @@ struct ChatApiResponse {
     provider: String,
     context_logs: usize,
     conversation_turn: usize,
+    source_logs: Vec<String>,  // Actual logs used for context
 }
 
 async fn chat_logs(
@@ -706,6 +706,66 @@ async fn chat_logs(
 ) -> Result<Json<ChatApiResponse>, (StatusCode, String)> {
     let start = Instant::now();
     info!(session = %req.session_id, message = %req.message, "CHAT request");
+
+    // Check for greetings or non-log queries
+    let msg_lower = req.message.to_lowercase().trim().to_string();
+    let greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "howdy", "sup", "what's up", "yo"];
+    let is_greeting = greetings.iter().any(|g| msg_lower == *g || msg_lower.starts_with(&format!("{} ", g)));
+    
+    // Check for gibberish (keyboard mash patterns)
+    let gibberish_patterns = ["asdf", "qwer", "zxcv", "hjkl", "jkl;"];
+    let is_gibberish = gibberish_patterns.iter().any(|p| msg_lower.contains(p));
+
+    // Check for off-topic questions (not about logs/systems)
+    let log_keywords = ["error", "log", "warn", "debug", "info", "service", "api", "database", "db", 
+        "timeout", "slow", "failed", "failure", "crash", "down", "outage", "issue", "problem",
+        "anomal", "incident", "alert", "critical", "auth", "payment", "nginx", "redis", "kafka",
+        "query", "connection", "latency", "performance", "traffic", "request", "response",
+        "yesterday", "today", "last hour", "last minute", "recent", "happened", "show me", "find"];
+    let has_log_context = log_keywords.iter().any(|k| msg_lower.contains(k));
+    
+    // If no log keywords found, use LLM to check if it's a log-related question
+    let is_offtopic = if !has_log_context && msg_lower.len() > 5 {
+        let classification = state.rag_engine.classify(&format!(
+            r#"Is this question about analyzing logs, debugging, system errors, or infrastructure monitoring?
+Question: "{}"
+Answer YES or NO only."#,
+            req.message
+        )).await;
+        
+        match classification {
+            Ok(response) => !response.to_uppercase().contains("YES"),
+            Err(_) => false, // If LLM fails, proceed with the query
+        }
+    } else {
+        false
+    };
+
+    if is_greeting {
+        let elapsed = start.elapsed().as_millis();
+        return Ok(Json(ChatApiResponse {
+            answer: "Hello! I'm LogAI, your log analysis assistant. Ask me about errors, performance issues, or anomalies in your logs. For example:\n\n• \"Show me errors in the last hour\"\n• \"What happened yesterday?\"\n• \"Why is the payment service slow?\"\n• \"Summarize auth failures\"".to_string(),
+            sources_count: 0,
+            response_time_ms: elapsed,
+            provider: "system".to_string(),
+            context_logs: 0,
+            conversation_turn: 1,
+            source_logs: vec![],
+        }));
+    }
+
+    if is_gibberish || is_offtopic {
+        let elapsed = start.elapsed().as_millis();
+        return Ok(Json(ChatApiResponse {
+            answer: "I'm LogAI - I specialize in analyzing your system logs. I can help with:\n\n• Finding errors and warnings\n• Investigating performance issues\n• Summarizing anomalies and incidents\n• Debugging service failures\n\nTry: \"Show me errors in the last hour\" or \"Why is the database slow?\"".to_string(),
+            sources_count: 0,
+            response_time_ms: elapsed,
+            provider: "system".to_string(),
+            context_logs: 0,
+            conversation_turn: 1,
+            source_logs: vec![],
+        }));
+    }
 
     let (history, last_logs, last_query, turn) = {
         let mut sessions = state.sessions.write().unwrap();
@@ -759,8 +819,20 @@ async fn chat_logs(
                 },
             ));
         }
+        if let Some(to) = analyzed.to {
+            conditions.push(Condition::range(
+                "timestamp_unix",
+                Range {
+                    lte: Some(to.timestamp() as f64),
+                    ..Default::default()
+                },
+            ));
+        }
         if let Some(ref service) = analyzed.service {
             conditions.push(Condition::matches_text("service", service.clone()));
+        }
+        if let Some(ref level) = analyzed.level {
+            conditions.push(Condition::matches_text("level", level.clone()));
         }
 
         let filter = if conditions.is_empty() {
@@ -770,7 +842,7 @@ async fn chat_logs(
         };
 
         let mut search_builder =
-            SearchPointsBuilder::new(COLLECTION_NAME, query_vector, 30).with_payload(true);
+            SearchPointsBuilder::new(COLLECTION_NAME, query_vector, 100).with_payload(true);
         if let Some(f) = filter {
             search_builder = search_builder.filter(f);
         }
@@ -793,8 +865,16 @@ async fn chat_logs(
             return Err((StatusCode::NOT_FOUND, "No relevant logs found".to_string()));
         }
 
-        let reranked = state.reranker.rerank(&req.message, logs_with_scores, 10);
-        reranked.into_iter().map(|r| r.message).collect()
+        // Pre-deduplicate before reranking for better diversity
+        let mut seen = std::collections::HashSet::new();
+        let unique_logs: Vec<(String, f32)> = logs_with_scores
+            .into_iter()
+            .filter(|(msg, _)| seen.insert(msg.clone()))
+            .collect();
+
+        let reranked = state.reranker.rerank(&req.message, unique_logs, 10);
+        reranked.into_iter().map(|r| r.message).take(10)
+            .collect()
     };
 
     let context_logs = logs.len();
@@ -814,6 +894,9 @@ async fn chat_logs(
         .query(&full_query, logs.clone())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Clone logs for response before moving to session
+    let response_logs = logs.clone();
 
     {
         let mut sessions = state.sessions.write().unwrap();
@@ -850,6 +933,7 @@ async fn chat_logs(
         provider: rag_response.provider,
         context_logs,
         conversation_turn: turn,
+        source_logs: response_logs,
     }))
 }
 
@@ -873,6 +957,38 @@ async fn classify_query_intent(rag_engine: &RagEngine, last_query: &str, new_que
         return QueryIntent::NewSearch;
     }
 
+    let new_lower = new_query.to_lowercase();
+    
+    // Quick heuristics - these are definitely NEW searches
+    let new_topic_indicators = [
+        "show me", "find", "list", "get", "what are", "search for",
+        "auth", "database", "payment", "nginx", "api", "error", "warning",
+        "timeout", "connection", "failure", "crash", "security",
+        "last hour", "last 2", "last 30", "yesterday", "today",
+    ];
+    
+    // These indicate follow-up questions about current context
+    let followup_indicators = [
+        "explain", "tell me more", "what caused", "why did", "how to fix",
+        "first one", "second one", "third one", "this", "that", "it",
+        "the error", "the issue", "more details", "elaborate", "expand",
+    ];
+    
+    // Check if it looks like a new topic
+    for indicator in new_topic_indicators {
+        if new_lower.contains(indicator) && !last_query.to_lowercase().contains(indicator) {
+            return QueryIntent::NewSearch;
+        }
+    }
+    
+    // Check if it looks like a follow-up
+    for indicator in followup_indicators {
+        if new_lower.contains(indicator) {
+            return QueryIntent::FollowUp;
+        }
+    }
+
+    // Fall back to LLM classification
     let prompt = format!(
         r#"Previous query: "{}"
 New query: "{}"
@@ -988,9 +1104,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     parser_registry.register(Box::new(SyslogParser::new()));
     info!("Parsers registered: apache, nginx, syslog");
 
-    // Setup RAG engine (using Groq for fast inference)
-    info!("Setting up RAG engine with Groq...");
-    let rag_engine = RagEngine::new(RagConfig::with_groq());
+    // Setup RAG engine (configurable via LOGAI_GROQ_MODEL env var)
+    let rag_config = RagConfig::from_env();
+    info!(
+        model = %rag_config.groq_model,
+        "Setting up RAG engine with Groq..."
+    );
+    let rag_engine = RagEngine::new(rag_config);
     let reranker = Reranker::new();
     info!("RAG engine ready!");
 
