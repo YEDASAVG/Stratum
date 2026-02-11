@@ -2,9 +2,12 @@
 
 use std::vec;
 
+use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::llm_client::{LlmClient, LlmError};
 
 #[derive(Error, Debug)]
 pub enum GroqError {
@@ -64,13 +67,14 @@ impl GroqClient {
             model: model.into(),
         }
     }
-    // create from env GROQ_API_KEY
+    
+    /// Create from env GROQ_API_KEY
     pub fn from_env(model: impl Into<String>) -> Result<Self, GroqError> {
         let api_key = std::env::var("GROQ_API_KEY").map_err(|_| GroqError::MissingApiKey)?;
         Ok(Self::new(api_key, model))
     }
 
-    // Generate text from prompt
+    /// Generate text from prompt (returns GroqError for internal use)
     pub async fn generate(&self, prompt: &str) -> Result<String, GroqError> {
         let request = ChatRequest {
             model: &self.model,
@@ -108,9 +112,28 @@ impl GroqClient {
             .map(|c| c.message.content)
             .ok_or_else(|| GroqError::ApiError("No response".to_string()))
     }
-    // getmodel name
-    pub fn model(&self) -> &str {
+    
+    /// Get model name
+    pub fn model_name(&self) -> &str {
         &self.model
+    }
+}
+
+#[async_trait]
+impl LlmClient for GroqClient {
+    async fn generate(&self, prompt: &str) -> Result<String, LlmError> {
+        // Call the inherent method and convert error
+        GroqClient::generate(self, prompt)
+            .await
+            .map_err(|e| LlmError::ApiError(e.to_string()))
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn provider(&self) -> &str {
+        "groq"
     }
 }
 

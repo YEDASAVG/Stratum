@@ -7,7 +7,8 @@
 // 4. Builds a chain: crash ← error ← warning ← root_cause
 // 5. Generates human-readable explanation
 
-use crate::groq_client::GroqClient;
+use std::sync::Arc;
+use crate::llm_client::LlmClient;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::time::{sleep, Duration};
@@ -118,13 +119,13 @@ struct CausalityScore {
 
 /// Causal Chain Analyzer
 pub struct CausalChainAnalyzer {
-    client: GroqClient,
+    client: Arc<dyn LlmClient>,
     max_chain_depth: usize,
     min_confidence: f64,
 }
 
 impl CausalChainAnalyzer {
-    pub fn new(client: GroqClient) -> Self {
+    pub fn new(client: Arc<dyn LlmClient>) -> Self {
         Self {
             client,
             max_chain_depth: 3,   // Reduced from 10
@@ -387,13 +388,10 @@ Write 2-3 sentences explaining what happened and why. Be specific and actionable
     async fn generate_recommendation(&self, root_cause: &Option<LogEvent>) -> Result<String, CausalError> {
         let root = root_cause.as_ref().ok_or(CausalError::NoRootCause)?;
         
-        let prompt = format!(r#"Given this root cause log entry:
-Level: {}
-Service: {}
-Message: {}
+        let prompt = format!(r#"Root cause: {} - {} - {}
 
-Suggest 1-2 actionable fixes. Be specific. Include commands if applicable."#,
-            root.level, root.service, root.message
+In 2-3 SHORT bullet points, give actionable fixes. No code examples. Max 50 words total."#,
+            root.service, root.level, root.message
         );
         
         self.client.generate(&prompt).await

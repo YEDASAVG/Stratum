@@ -23,6 +23,10 @@ pub async fn chat_logs(
 ) -> Result<Json<ChatApiResponse>, (StatusCode, Json<ApiError>)> {
     let start = Instant::now();
     info!(session = %req.session_id, message = %req.message, "CHAT request");
+    
+    // Configurable max logs (default: 20)
+    let max_context_logs: usize = std::env::var("LOGAI_MAX_CONTEXT_LOGS")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(20);
 
     let msg_lower = req.message.to_lowercase().trim().to_string();
     let greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "howdy", "sup", "what's up", "yo"];
@@ -106,13 +110,28 @@ Answer YES or NO only."#,
     let intent = classify_query_intent(&state.rag_engine, &last_query, &req.message).await;
     info!(intent = ?intent, "Query intent classified");
 
-    let logs = if intent == QueryIntent::FollowUp && !last_logs.is_empty() {
-        info!("Using cached logs from previous turn");
+    // Always check if current message is a causal query (even for follow-ups)
+    let analyzed = state.rag_engine.analyze_query(&req.message);
+    let is_causal_query = analyzed.intent == RagQueryIntent::Causal;
+    info!(
+        is_causal = is_causal_query, 
+        rag_intent = ?analyzed.intent, 
+        will_use_cached = (intent == QueryIntent::FollowUp && !last_logs.is_empty() && !is_causal_query),
+        "RAG intent detected"
+    );
+
+    // For causal queries, always fetch fresh logs with temporal context
+    // For non-causal follow-ups, use cached logs
+    let logs = if intent == QueryIntent::FollowUp && !last_logs.is_empty() && !is_causal_query {
+        info!("Using cached logs from previous turn (non-causal follow-up)");
         last_logs
     } else {
-        let analyzed = state.rag_engine.analyze_query(&req.message);
-        let is_causal_query = analyzed.intent == RagQueryIntent::Causal;
-        info!(is_causal = is_causal_query, rag_intent = ?analyzed.intent, "RAG intent detected");
+        info!(
+            is_follow_up = (intent == QueryIntent::FollowUp),
+            is_causal = is_causal_query,
+            has_last_logs = !last_logs.is_empty(),
+            "Fetching fresh logs for causal query or new search"
+        );
 
         let query_vector = {
             let mut model = state.model.lock().unwrap();
@@ -124,6 +143,7 @@ Answer YES or NO only."#,
 
         let mut conditions = vec![];
         if let Some(from) = analyzed.from {
+            info!(from = %from, "Time filter: FROM");
             conditions.push(Condition::range(
                 "timestamp_unix",
                 Range {
@@ -133,6 +153,7 @@ Answer YES or NO only."#,
             ));
         }
         if let Some(to) = analyzed.to {
+            info!(to = %to, "Time filter: TO");
             conditions.push(Condition::range(
                 "timestamp_unix",
                 Range {
@@ -270,8 +291,8 @@ Answer YES or NO only."#,
                     .into_iter()
                     .filter(|(msg, _)| seen.insert(msg.clone()))
                     .collect();
-                let reranked = state.reranker.rerank(&req.message, unique_logs, 10);
-                reranked.into_iter().map(|r| r.message).take(10).collect()
+                let reranked = state.reranker.rerank(&req.message, unique_logs, max_context_logs);
+                reranked.into_iter().map(|r| r.message).take(max_context_logs).collect()
             }
         } else {
             // Normal (non-causal) query - existing behavior
@@ -281,8 +302,8 @@ Answer YES or NO only."#,
                 .filter(|(msg, _)| seen.insert(msg.clone()))
                 .collect();
 
-            let reranked = state.reranker.rerank(&req.message, unique_logs, 10);
-            reranked.into_iter().map(|r| r.message).take(10).collect()
+            let reranked = state.reranker.rerank(&req.message, unique_logs, max_context_logs);
+            reranked.into_iter().map(|r| r.message).take(max_context_logs).collect()
         };
         
         final_logs
@@ -300,11 +321,30 @@ Answer YES or NO only."#,
         )
     };
 
+    // Pass intent override for follow-up queries where conversation context breaks intent detection
+    let intent_override = if is_causal_query {
+        Some(RagQueryIntent::Causal)
+    } else {
+        None
+    };
+    
+    info!(
+        intent_override = ?intent_override,
+        logs_count = logs.len(),
+        "Calling RAG engine query_with_intent"
+    );
+
     let rag_response = state
         .rag_engine
-        .query(&full_query, logs.clone())
+        .query_with_intent(&full_query, logs.clone(), intent_override)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+    
+    info!(
+        has_causal_chain = rag_response.causal_chain.is_some(),
+        chain_len = rag_response.causal_chain.as_ref().map(|c| c.chain.len()).unwrap_or(0),
+        "RAG response received"
+    );
 
     let response_logs = logs.clone();
 

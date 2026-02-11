@@ -333,11 +333,11 @@ export default function ChatPage() {
                             {/* Recommendation */}
                             {message.metadata.causalChain.recommendation && (
                               <div className="mt-2 pt-2 border-t border-border">
-                                <div className="p-2 bg-background rounded border border-border text-sm">
+                                <div className="p-2 bg-background rounded border border-border text-sm prose prose-sm dark:prose-invert max-w-none">
                                   <span className="font-medium text-muted-foreground">
-                                    Recommendation:
-                                  </span>{" "}
-                                  <span className="text-foreground">{message.metadata.causalChain.recommendation}</span>
+                                    💡 Recommendation:
+                                  </span>
+                                  <ReactMarkdown>{message.metadata.causalChain.recommendation}</ReactMarkdown>
                                 </div>
                               </div>
                             )}
