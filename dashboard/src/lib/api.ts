@@ -10,6 +10,28 @@ export interface Log {
   source_line?: number
 }
 
+export interface CausalLink {
+  effect: LogEvent
+  cause: LogEvent
+  confidence: number
+  explanation: string
+}
+
+export interface LogEvent {
+  timestamp: string
+  level: string
+  service: string
+  message: string
+}
+
+export interface CausalChain {
+  effect: LogEvent
+  chain: CausalLink[]
+  root_cause: LogEvent | null
+  summary: string
+  recommendation: string | null
+}
+
 export interface ChatResponse {
   answer: string
   sources_count: number
@@ -18,6 +40,7 @@ export interface ChatResponse {
   context_logs: number
   conversation_turn: number
   source_logs: string[]
+  causal_chain?: CausalChain
 }
 
 // Generate a unique session ID for this browser session
@@ -139,7 +162,10 @@ export async function sendChat(query: string): Promise<ChatResponse> {
       message: query,
     }),
   })
-  if (!res.ok) throw new Error("Failed to send chat")
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({ error: "Failed to send chat" }))
+    throw new Error(errorData.error || "Failed to send chat")
+  }
   return res.json()
 }
 

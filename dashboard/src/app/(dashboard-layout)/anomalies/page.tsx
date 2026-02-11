@@ -130,7 +130,8 @@ export default function AnomaliesPage() {
                       {anomaly.service}
                     </div>
                     <div>
-                      Current: {anomaly.current_value.toFixed(1)} / Expected: {anomaly.expected_value.toFixed(1)}
+                      Current: {anomaly.current_value.toFixed(1)} / Expected:{" "}
+                      {anomaly.expected_value.toFixed(1)}
                     </div>
                   </div>
                 </CardContent>

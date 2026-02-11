@@ -107,52 +107,19 @@ build_project() {
     echo ""
 }
 
-# Start services
-start_services() {
-    echo -e "${YELLOW}Starting LogAI services...${NC}"
-    echo ""
-    
-    # Start API in background
-    echo -e "${CYAN}Starting API server on port 3000...${NC}"
-    RUST_LOG=info ./target/release/logai-api &
-    API_PID=$!
-    echo $API_PID > /tmp/logai-api.pid
-    sleep 2
-    
-    # Start Ingest worker in background
-    echo -e "${CYAN}Starting ingestion worker...${NC}"
-    RUST_LOG=info ./target/release/logai-worker &
-    INGEST_PID=$!
-    echo $INGEST_PID > /tmp/logai-ingest.pid
-    sleep 2
-    
-    echo ""
-}
-
 # Show status
 show_status() {
     echo -e "${GREEN}${BOLD}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}${BOLD}║                    LogAI is Running!                       ║${NC}"
+    echo -e "${GREEN}${BOLD}║              Infrastructure Ready!                         ║${NC}"
     echo -e "${GREEN}${BOLD}╚═══════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "${CYAN}API Server:${NC}    http://localhost:3000"
-    echo -e "${CYAN}Health Check:${NC}  http://localhost:3000/health"
+    echo -e "${CYAN}Infrastructure:${NC}"
+    echo -e "  NATS:       http://localhost:4222"
+    echo -e "  ClickHouse: http://localhost:8123"
+    echo -e "  Qdrant:     http://localhost:6333"
     echo ""
-    echo -e "${BOLD}Quick Commands:${NC}"
-    echo ""
-    echo -e "  ${GREEN}Check status:${NC}"
-    echo "    ./target/release/logai status"
-    echo ""
-    echo -e "  ${GREEN}Search logs:${NC}"
-    echo "    ./target/release/logai search \"error timeout\""
-    echo ""
-    echo -e "  ${GREEN}Ask AI:${NC}"
-    echo "    ./target/release/logai ask \"What are the common errors?\""
-    echo ""
-    echo -e "  ${GREEN}Ingest logs:${NC}"
-    echo "    ./target/release/logai ingest /path/to/logs.log --format nginx --service my-app"
-    echo ""
-    echo -e "${YELLOW}To stop LogAI:${NC}  ./stop.sh"
+    echo -e "${YELLOW}To start LogAI services, run:${NC}  ./dev.sh"
+    echo -e "${YELLOW}To stop infrastructure:${NC}       ./stop.sh"
     echo ""
 }
 
@@ -161,7 +128,6 @@ main() {
     check_prereqs
     start_infra
     build_project
-    start_services
     show_status
 }
 

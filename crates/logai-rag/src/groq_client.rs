@@ -91,7 +91,7 @@ impl GroqClient {
             .client
             .post(Self::BASE_URL)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "applicatioon/json")
+            .header("Content-Type", "application/json")
             .json(&request)
             .send()
             .await?;

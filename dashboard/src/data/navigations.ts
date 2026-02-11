@@ -22,7 +22,7 @@ export const navigationsData: NavigationType[] = [
       {
         title: "Anomalies",
         href: "/anomalies",
-        iconName: "AlertTriangle",
+        iconName: "TriangleAlert",
       },
     ],
   },

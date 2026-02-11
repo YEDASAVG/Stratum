@@ -1,8 +1,8 @@
-// RAG engine
-// Orchestrates: Query Analysis -> Semantic Search -> Context Building -> LLM response
+// RAG Engine - Routes queries to appropriate handler based on intent
 
+use crate::causal::{CausalChain, CausalChainAnalyzer};
 use crate::groq_client::{GroqClient, GroqError};
-use crate::query_analyzer::{AnalyzedQuery, QueryAnalyzer};
+use crate::query_analyzer::{AnalyzedQuery, QueryAnalyzer, QueryIntent};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -16,6 +16,9 @@ pub enum RagError {
 
     #[error("No relevant logs found")]
     NoLogsFound,
+    
+    #[error("Causal analysis failed: {0}")]
+    CausalError(String),
 }
 
 // RAG engine configuration
@@ -58,13 +61,14 @@ impl RagConfig {
 
 
 
-// RAG response with answer and sources
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagResponse {
     pub answer: String,
     pub query_analysis: QueryAnalysis,
     pub sources_count: usize,
     pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causal_chain: Option<CausalChain>,  // Present when intent is Causal
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,59 +78,105 @@ pub struct QueryAnalysis {
     pub time_filter: Option<String>,
     pub service_filter: Option<String>,
     pub level_filter: Option<String>,
+    pub intent: String,
 }
 
-// main RAG engine
 pub struct RagEngine {
     config: RagConfig,
     client: GroqClient,
     analyzer: QueryAnalyzer,
+    causal_analyzer: CausalChainAnalyzer,
 }
 
 impl RagEngine {
     pub fn new(config: RagConfig) -> Self {
         let client = GroqClient::from_env(&config.groq_model)
             .expect("GROQ_API_KEY must be set");
+        let causal_client = GroqClient::from_env(&config.groq_model)
+            .expect("GROQ_API_KEY must be set");
         let analyzer = QueryAnalyzer::new();
+        let causal_analyzer = CausalChainAnalyzer::new(causal_client);
 
         Self {
             config,
             client,
             analyzer,
+            causal_analyzer,
         }
     }
 
-    // process a natural lang query aboout logs
     pub async fn query(
         &self,
         user_query: &str,
         logs: Vec<String>,
     ) -> Result<RagResponse, RagError> {
-        let analyzed = self.analyzer.analyze(user_query); // analyze the query
+        let analyzed = self.analyzer.analyze(user_query);
 
         if logs.is_empty() {
-            return Err(RagError::NoLogsFound); // check if we have logs
+            return Err(RagError::NoLogsFound);
         }
 
-        let context = self.build_context(&logs); // build the context from logs
+        // Route based on intent
+        match analyzed.intent {
+            QueryIntent::Causal => self.handle_causal_query(user_query, logs, &analyzed).await,
+            _ => self.handle_search_query(user_query, logs, &analyzed).await,
+        }
+    }
 
-        let prompt = self.build_prompt(user_query, &context); // Build prompt
+    async fn handle_causal_query(
+        &self,
+        user_query: &str,
+        logs: Vec<String>,
+        analyzed: &AnalyzedQuery,
+    ) -> Result<RagResponse, RagError> {
+        // Try causal analysis, but fall back to normal search if it fails (e.g., rate limit)
+        match self.causal_analyzer
+            .analyze(user_query, logs.clone(), analyzed.service.as_deref())
+            .await
+        {
+            Ok(chain) => Ok(RagResponse {
+                answer: chain.summary.clone(),
+                query_analysis: self.build_query_analysis(analyzed),
+                sources_count: logs.len(),
+                provider: "groq".to_string(),
+                causal_chain: Some(chain),
+            }),
+            Err(e) => {
+                // Log the error but fall back to normal search
+                tracing::warn!(error = %e, "Causal analysis failed, falling back to search");
+                self.handle_search_query(user_query, logs, analyzed).await
+            }
+        }
+    }
 
+    async fn handle_search_query(
+        &self,
+        user_query: &str,
+        logs: Vec<String>,
+        analyzed: &AnalyzedQuery,
+    ) -> Result<RagResponse, RagError> {
+        let context = self.build_context(&logs);
+        let prompt = self.build_prompt(user_query, &context);
         let answer = self.client.generate(&prompt).await?;
 
-        // Building the response
         Ok(RagResponse {
             answer,
-            query_analysis: QueryAnalysis {
-                original_query: analyzed.original,
-                search_query: analyzed.search_query,
-                time_filter: analyzed.from.map(|t| t.to_rfc3339()),
-                service_filter: analyzed.service,
-                level_filter: analyzed.level,
-            },
+            query_analysis: self.build_query_analysis(analyzed),
             sources_count: logs.len(),
             provider: "groq".to_string(),
+            causal_chain: None,
         })
+    }
+
+    fn build_query_analysis(&self, analyzed: &AnalyzedQuery) -> QueryAnalysis {
+        QueryAnalysis {
+            original_query: analyzed.original.clone(),
+            search_query: analyzed.search_query.clone(),
+            time_filter: analyzed.from.map(|t| t.to_rfc3339()),
+            service_filter: analyzed.service.clone(),
+            level_filter: analyzed.level.clone(),
+            intent: format!("{:?}", analyzed.intent),
+        }
     }
 
     // get analyzed query (for API to use in search)
