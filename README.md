@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="dashboard/public/images/logo.svg" alt="LogAI Logo" width="120" height="120">
+  <img src="dashboard/public/images/logo.svg" alt="Stratum Logo" width="120" height="120">
 </p>
 
-<h1 align="center">LogAI</h1>
+<h1 align="center">Stratum</h1>
 
 <p align="center">
   <strong>🧠 Ask your logs questions. Get answers in plain English.</strong>
@@ -28,7 +28,7 @@
 
 You know how you have thousands of log files and when something breaks, you spend hours searching through them?
 
-**LogAI fixes that.**
+**Stratum fixes that.**
 
 Instead of this:
 ```bash
@@ -86,7 +86,7 @@ cd log-intelligence
 
 ### 💬 Ask Questions in Plain English
 
-| You Ask | LogAI Answers |
+| You Ask | Stratum Answers |
 |---------|---------------|
 | "Why is the API slow?" | Finds latency issues, shows timeline, suggests fixes |
 | "Show errors from nginx" | Filters + ranks relevant logs automatically |
@@ -104,7 +104,7 @@ Even though none of them contain "database connection issues"!
 
 ### 🚨 Automatic Anomaly Detection
 
-LogAI watches your logs 24/7 and alerts you when:
+Stratum watches your logs 24/7 and alerts you when:
 - Error rate spikes (5x normal)
 - New error patterns appear
 - Service goes quiet (volume drop)
@@ -310,9 +310,9 @@ docker compose up -d --build
 
 ---
 
-## 🆚 Why LogAI vs Others?
+## 🆚 Why Stratum vs Others?
 
-| Feature | LogAI | Datadog | Splunk | ELK |
+| Feature | Stratum | Datadog | Splunk | ELK |
 |---------|-------|---------|--------|-----|
 | **Price** | Free | $$$$ | $$$$ | Free |
 | **Setup Time** | 1 min | Hours | Hours | Hours |
@@ -350,13 +350,13 @@ cargo run --release --bin logai-stress -- --rate 10000 --total 100000
 
 ## 📜 License
 
-MIT License - do whatever you want with it!
+Licensed under the [Apache License 2.0](LICENSE) - use it freely, with patent protection included!
 
 ---
 
 ## ⭐ Star This Repo!
 
-If LogAI saved you time debugging, give it a star! It helps others find it.
+If Stratum saved you time debugging, give it a star! It helps others find it.
 
 <p align="center">
   <a href="https://github.com/yourusername/log-intelligence">
