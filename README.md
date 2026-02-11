@@ -1,256 +1,371 @@
-# LogAI - AI-Powered Log Analysis Platform
+<p align="center">
+  <img src="dashboard/public/images/logo.svg" alt="LogAI Logo" width="120" height="120">
+</p>
 
-Real-time log intelligence with semantic search, anomaly detection, and natural language queries powered by AI.
+<h1 align="center">LogAI</h1>
 
-## Status: All Phases Complete ✅
+<p align="center">
+  <strong>🧠 Ask your logs questions. Get answers in plain English.</strong>
+</p>
 
-## Features
+<p align="center">
+  <a href="#-one-command-setup">Setup</a> •
+  <a href="#-what-can-it-do">Features</a> •
+  <a href="#-how-it-works">How It Works</a> •
+  <a href="#-faq">FAQ</a>
+</p>
 
-- **Semantic Search** - Find logs by meaning, not just keywords
-- **AI-Powered Analysis** - Ask questions about your logs in natural language  
-- **Multi-Format Support** - Parse Apache, Nginx, Syslog, and JSON logs
-- **Real-time Ingestion** - Stream logs via NATS messaging
-- **Anomaly Detection** - Automatic detection of unusual patterns
-- **Beautiful CLI** - Full-featured command-line interface
-- **API Key Security** - Optional authentication for production
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/Next.js-black?style=for-the-badge&logo=next.js&logoColor=white" alt="Next.js">
+  <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/ClickHouse-FFCC01?style=for-the-badge&logo=clickhouse&logoColor=black" alt="ClickHouse">
+</p>
 
-## Architecture
+---
+
+## 🤔 What is this?
+
+You know how you have thousands of log files and when something breaks, you spend hours searching through them?
+
+**LogAI fixes that.**
+
+Instead of this:
+```bash
+grep -r "error" /var/log/ | grep "payment" | grep "timeout" | head -50
+# 😫 Still no idea what's wrong...
+```
+
+You just ask:
+```
+"Why did payments fail last night?"
+```
+
+And get:
+```
+The payment failures occurred due to a database connection timeout.
+At 2:47 AM, the connection pool was exhausted because of a memory leak
+in the order-service. Here's the root cause chain:
+
+1. 02:30 - Memory usage exceeded 90%
+2. 02:45 - Connection pool warnings started
+3. 02:47 - First payment timeout
+4. 02:52 - Service restarted automatically
+
+Recommendation: Increase connection pool size and fix the memory leak
+in OrderProcessor.java line 234.
+```
+
+---
+
+## 🚀 One-Command Setup
+
+### Prerequisites
+- [Docker](https://docs.docker.com/get-docker/) installed
+- Free [Groq API key](https://console.groq.com) (takes 30 seconds)
+
+### Let's Go!
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/yourusername/log-intelligence.git
+cd log-intelligence
+
+# 2. Run setup (it will ask for your Groq API key)
+./setup.sh
+
+# 3. Open your browser
+# Dashboard: http://localhost:3001
+```
+
+**That's it. You're done.** 🎉
+
+---
+
+## 🎯 What Can It Do?
+
+### 💬 Ask Questions in Plain English
+
+| You Ask | LogAI Answers |
+|---------|---------------|
+| "Why is the API slow?" | Finds latency issues, shows timeline, suggests fixes |
+| "Show errors from nginx" | Filters + ranks relevant logs automatically |
+| "What happened at 3am?" | Summarizes all events in that time window |
+| "Why did users get 502 errors?" | Traces the root cause across services |
+
+### 🔍 Smart Search (Not Just Keywords)
+
+Search for `"database connection issues"` and it finds:
+- `Connection refused to postgres:5432`
+- `MySQL timeout after 30s`
+- `Redis reconnection failed`
+
+Even though none of them contain "database connection issues"!
+
+### 🚨 Automatic Anomaly Detection
+
+LogAI watches your logs 24/7 and alerts you when:
+- Error rate spikes (5x normal)
+- New error patterns appear
+- Service goes quiet (volume drop)
+
+Get alerts in Slack before users complain.
+
+### 📊 Beautiful Dashboard
+
+- Real-time log explorer
+- AI chat interface
+- Anomaly timeline
+- Service health overview
+
+---
+
+## 🏗️ How It Works
 
 ```
-┌─────────────┐     ┌────────┐     ┌────────────┐     ┌─────────────┐
-│  Log Files  │────▶│  API   │────▶│    NATS    │────▶│  ClickHouse │
-│  or Streams │     │ Server │     │  (Ingest)  │     │  (Storage)  │
-└─────────────┘     └────────┘     └────────────┘     └─────────────┘
-                         │                                    │
-                         ▼                                    │
-                    ┌─────────┐                               │
-                    │ Qdrant  │◀──────────────────────────────┘
-                    │(Vectors)│       Vector Embeddings
-                    └─────────┘
-                         │
-                         ▼
-                    ┌─────────┐
-                    │  Groq   │  Fast LLM for analysis
-                    │   AI    │
-                    └─────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                         YOUR LOGS                                    │
+│  (nginx, apache, apps, anything)                                    │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                         LOG AI                                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                 │
+│  │   Parser    │  │  Embeddings │  │   Search    │                 │
+│  │ nginx,json  │  │   (AI)      │  │   (Qdrant)  │                 │
+│  └─────────────┘  └─────────────┘  └─────────────┘                 │
+│         │                │                │                         │
+│         ▼                ▼                ▼                         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                 │
+│  │  ClickHouse │  │    Groq     │  │  Dashboard  │                 │
+│  │  (Storage)  │  │   (LLM)     │  │  (Next.js)  │                 │
+│  └─────────────┘  └─────────────┘  └─────────────┘                 │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+                    ┌─────────────────────┐
+                    │  "The error was     │
+                    │   caused by..."     │
+                    └─────────────────────┘
 ```
 
-## Tech Stack
+**In Simple Terms:**
+1. Your logs go in
+2. AI understands what they mean
+3. You ask questions
+4. You get answers
 
-| Component | Technology | Status |
-|-----------|------------|--------|
-| Language | Rust | ✅ |
-| HTTP Server | Axum 0.8 | ✅ |
-| Message Queue | NATS 2.10 | ✅ |
-| Log Storage | ClickHouse 24.1 | ✅ |
-| Vector DB | Qdrant 1.15 | ✅ |
-| Embeddings | FastEmbed (384D) | ✅ |
-| LLM | Groq (llama3-70b) | ✅ |
-| CLI | Clap + Colored | ✅ |
+---
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 log-intelligence/
-├── Cargo.toml              # Workspace root
-├── docker-compose.yml      # NATS, ClickHouse, Qdrant
-├── start.sh                # One-click start script
-├── stop.sh                 # Stop all services
-└── crates/
-    ├── logai-core/         # Shared types + log parsers
-    ├── logai-api/          # HTTP API server
-    ├── logai-ingest/       # NATS consumer → storage
-    ├── logai-rag/          # RAG engine for AI queries
-    └── logai-cli/          # CLI tool (logai)
+├── 🚀 setup.sh              # One-command setup
+├── 🐳 docker-compose.yml    # All services defined here
+├── 📄 Dockerfile            # Rust backend container
+│
+├── crates/                  # Rust code (the backend)
+│   ├── logai-api/           # HTTP API server
+│   ├── logai-core/          # Log parsers
+│   ├── logai-rag/           # AI/search engine
+│   ├── logai-worker/        # Background processor
+│   ├── logai-anomaly/       # Anomaly detection
+│   └── logai-cli/           # Terminal commands
+│
+└── dashboard/               # Next.js frontend
+    ├── 🐳 Dockerfile
+    └── src/
+        └── app/             # React pages
 ```
 
-## Quick Start
+---
 
-### Prerequisites
-- Rust 1.75+
-- Docker & Docker Compose
-- Groq API key (free at [console.groq.com](https://console.groq.com))
+## 🛠️ Commands
 
-### 1. Configure Environment
+### Docker (Recommended)
 
 ```bash
-# Copy example env file
-cp .env.example .env
+# Start everything
+docker compose up -d
 
-# Edit and add your Groq API key
-nano .env
+# Stop everything
+docker compose down
+
+# View logs
+docker compose logs -f
+
+# Start with demo data (simulated logs)
+docker compose --profile demo up -d
 ```
 
-### 2. One-Click Start
+### Development Mode
+
+If you want to modify the code:
 
 ```bash
-./start.sh
+# Start only infrastructure
+docker compose -f docker-compose.dev.yml up -d
+
+# Run Rust backend locally
+./dev.sh
+
+# Run frontend locally
+cd dashboard && pnpm dev
 ```
 
-This will:
-- Start infrastructure (NATS, ClickHouse, Qdrant)
-- Build all components
-- Launch API server and ingestion worker
-
-### 3. Use the CLI
+### CLI Commands
 
 ```bash
-# Check system status
-./target/release/logai status
+# Check if everything is running
+logai status
 
 # Search logs
-./target/release/logai search "authentication failed"
+logai search "timeout error"
 
-# Ask AI about your logs
-./target/release/logai ask "What are the most common errors?"
+# Ask AI a question
+logai ask "What caused the crash at 3am?"
 
-# Ingest logs from a file
-./target/release/logai ingest /var/log/nginx/access.log --format nginx --service my-nginx
+# Import your log files
+logai ingest /var/log/nginx/access.log --format nginx
 
 # View recent logs
-./target/release/logai logs --limit 20
+logai logs --limit 50
 ```
 
-## CLI Reference
+---
 
-### Global Options
+## 🔌 Supported Log Formats
 
-```
--a, --api-url <URL>    API server URL [default: http://localhost:3000]
--k, --api-key <KEY>    API key (or set LOGAI_API_KEY env var)
-```
+| Format | Example |
+|--------|---------|
+| **JSON** | `{"level":"error","message":"Connection failed"}` |
+| **Nginx** | `192.168.1.1 - - [10/Feb/2026:14:00:00 +0000] "GET /api" 500` |
+| **Apache** | `[Tue Feb 10 14:00:00 2026] [error] Connection refused` |
+| **Syslog** | `Feb 10 14:00:00 server sshd[1234]: Failed password` |
 
-### Commands
+Don't see your format? The AI figures it out automatically for most logs!
 
-| Command | Description |
-|---------|-------------|
-| `logai status` | Check health of all system components |
-| `logai search <query>` | Semantic search for logs |
-| `logai ask <question>` | Ask AI about your logs |
-| `logai ingest <file>` | Import logs from a file |
-| `logai logs` | Show recent logs |
+---
 
-### Examples
+## ⚙️ Configuration
+
+Create a `.env` file (or run `./setup.sh` which does this for you):
 
 ```bash
-# Search with limit
-logai search "database connection timeout" --limit 20
+# Required - Get free key at https://console.groq.com
+GROQ_API_KEY=gsk_your_key_here
 
-# Ask AI questions
-logai ask "What caused the spike in errors at 3pm?"
-logai ask "Summarize authentication patterns"
-logai ask "Are there any security concerns?"
+# Optional - For local Ollama (no internet needed)
+LLM_PROVIDER=ollama
+OLLAMA_URL=http://localhost:11434
 
-# Ingest different log formats
-logai ingest logs.json --format json
-logai ingest access.log --format apache --service apache-frontend
-logai ingest nginx.log --format nginx --service nginx-gateway
-logai ingest syslog.log --format syslog --service linux-server
+# Optional - Protect your API
+LOGAI_API_KEY=your-secret-key
+
+# Optional - Slack alerts
+SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 ```
 
-## API Endpoints
+---
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check (no auth required) |
-| POST | `/api/logs` | Ingest JSON log entry |
-| POST | `/api/logs/raw` | Ingest raw log lines |
-| GET | `/api/search` | Semantic search logs |
-| GET | `/api/ask` | Ask AI about logs |
+## ❓ FAQ
 
-### Authentication
+### "Do I need to pay for anything?"
 
-If `LOGAI_API_KEY` is set, include header:
-```
-X-API-Key: your-api-key
-```
+**Nope!** 
+- Groq API has a generous free tier (enough for personal use)
+- All infrastructure runs locally in Docker
+- Or use Ollama for 100% free local AI
 
-### POST /api/logs - Ingest Log
+### "How many logs can it handle?"
+
+- **Ingestion**: 50,000+ logs/second
+- **Storage**: Millions of logs (ClickHouse is crazy efficient)
+- **Search**: <100ms response time
+
+### "Can I use my own LLM?"
+
+Yes! Set `LLM_PROVIDER=ollama` and point to your local Ollama.
+
+### "Is my data sent anywhere?"
+
+Only the AI query + relevant log snippets go to Groq for analysis. 
+Your raw logs stay 100% local in Docker volumes.
+
+### "It's not working!"
 
 ```bash
-curl -X POST http://localhost:3000/api/logs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "service": "my-app",
-    "message": "User login successful",
-    "level": "info",
-    "metadata": {"user_id": "123"}
-  }'
+# Check if all services are running
+docker compose ps
+
+# Check logs for errors
+docker compose logs api
+
+# Common fixes:
+docker compose down
+docker compose up -d --build
 ```
 
-### POST /api/logs/raw - Ingest Raw Logs
+---
+
+## 🆚 Why LogAI vs Others?
+
+| Feature | LogAI | Datadog | Splunk | ELK |
+|---------|-------|---------|--------|-----|
+| **Price** | Free | $$$$ | $$$$ | Free |
+| **Setup Time** | 1 min | Hours | Hours | Hours |
+| **AI Chat** | ✅ | ✅ | ❌ | ❌ |
+| **Self-Hosted** | ✅ | ❌ | ❌ | ✅ |
+| **Semantic Search** | ✅ | ❌ | ❌ | ❌ |
+| **Root Cause Analysis** | ✅ Auto | Manual | Manual | Manual |
+
+---
+
+## 🧪 Running Benchmarks
 
 ```bash
-curl -X POST http://localhost:3000/api/logs/raw \
-  -H "Content-Type: application/json" \
-  -d '{
-    "format": "nginx",
-    "service": "nginx-gateway",
-    "lines": [
-      "192.168.1.1 - - [24/May/2025:10:00:00 +0000] \"GET /api/users HTTP/1.1\" 200 1234"
-    ]
-  }'
+# Run parsing benchmarks
+cargo bench -p logai-core --bench parsing
+
+# Run RAG benchmarks
+cargo bench -p logai-rag --bench rag
+
+# Stress test (API must be running)
+cargo run --release --bin logai-stress -- --rate 10000 --total 100000
 ```
 
-### GET /api/search - Semantic Search
+---
 
-```bash
-curl "http://localhost:3000/api/search?q=timeout%20error&limit=5"
-```
+## 🤝 Contributing
 
-### GET /api/ask - Ask AI
+1. Fork the repo
+2. Create a branch (`git checkout -b feature/awesome`)
+3. Make your changes
+4. Run tests (`cargo test`)
+5. Push and create a PR
 
-```bash
-curl "http://localhost:3000/api/ask?q=What%20are%20the%20most%20common%20errors"
-```
+---
 
-Response:
-```json
-{
-  "question": "What are the most common errors",
-  "answer": "Based on the logs, the most common errors are...",
-  "sources": 5,
-  "provider": "groq",
-  "latency_ms": 856
-}
-```
+## 📜 License
 
-## Log Formats Supported
+MIT License - do whatever you want with it!
 
-### JSON
-```json
-{"service": "my-service", "message": "Operation completed", "level": "info"}
-```
+---
 
-### Apache Combined
-```
-192.168.1.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /page.html HTTP/1.0" 200 2326
-```
+## ⭐ Star This Repo!
 
-### Nginx
-```
-192.168.1.1 - - [24/May/2025:10:00:00 +0000] "GET /api/users HTTP/1.1" 200 1234 "-" "curl"
-```
+If LogAI saved you time debugging, give it a star! It helps others find it.
 
-### Syslog
-```
-May 24 10:30:00 server1 sshd[12345]: Accepted publickey for user from 10.0.0.5
-```
+<p align="center">
+  <a href="https://github.com/yourusername/log-intelligence">
+    <img src="https://img.shields.io/github/stars/yourusername/log-intelligence?style=social" alt="GitHub stars">
+  </a>
+</p>
 
-## Environment Variables
+---
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `GROQ_API_KEY` | Groq API key for LLM | Yes |
-| `LOGAI_API_KEY` | API authentication key | No |
-
-## Performance
-
-- **Ingestion**: ~10,000 logs/second sustained
-- **Search latency**: <50ms for vector search
-- **AI response**: ~1 second (using Groq)
-- **Storage**: Compressed columnar storage with ClickHouse
-
-## License
-
-MIT
+<p align="center">
+  Built with ❤️ and mass amounts of ☕
+</p>

@@ -1,6 +1,11 @@
-# log-intelligence/docker-compose.yml
+# LogAI Full Stack Docker Compose
+# Run: docker compose up -d
 
 services:
+  # ============================================
+  # Infrastructure Services
+  # ============================================
+  
   # Message Queue
   nats:
     image: nats:2.10-alpine
@@ -10,8 +15,13 @@ services:
     command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
     volumes:
       - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
-  #log Storage (Analysis DB)
+  # Log Storage (ClickHouse)
   clickhouse:
     image: clickhouse/clickhouse-server:24.1
     ports:
@@ -23,15 +33,109 @@ services:
       - CLICKHOUSE_DB=logai
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
-  #Vector Database
+  # Vector Database (Qdrant)
   qdrant:
     image: qdrant/qdrant:v1.15.0
     ports:
-      - "6333:6333"  # gRPC interface
-      - "6334:6334"  # REST API
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC interface
     volumes:
       - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ============================================
+  # Application Services
+  # ============================================
+
+  # API Server
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - RUST_LOG=info
+      - NATS_URL=nats:4222
+      - QDRANT_URL=http://qdrant:6334
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      - LOGAI_MAX_CONTEXT_LOGS=${LOGAI_MAX_CONTEXT_LOGS:-25}
+      - LOGAI_API_KEY=${LOGAI_API_KEY:-}
+    command: ["./logai-api"]
+    depends_on:
+      nats:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Background Worker
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - RUST_LOG=info
+      - NATS_URL=nats:4222
+      - QDRANT_URL=http://qdrant:6334
+      - CLICKHOUSE_URL=http://clickhouse:8123
+    command: ["./logai-worker"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Log Simulator (generates sample logs)
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - API_URL=http://api:3000
+    command: ["./logai-simulate"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles:
+      - demo  # Only runs with: docker compose --profile demo up
+
+  # Dashboard (Next.js)
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:3000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   nats_data:

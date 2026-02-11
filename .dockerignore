@@ -1,0 +1,35 @@
+# Build artifacts
+target/
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files (passed via docker-compose)
+.env
+.env.local
+
+# Documentation
+*.md
+LICENSE
+
+# Dashboard (has its own Dockerfile)
+dashboard/
+
+# Benchmarks
+benches/
+
+# Sample data
+sample-data/
+
+# Cache
+.fastembed_cache/
+__pycache__/
+*.pyc
+
+# Logs
+*.log

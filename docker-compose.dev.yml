@@ -1,0 +1,56 @@
+# LogAI Development Docker Compose
+# Only runs infrastructure services - use for local development
+# Usage: docker compose -f docker-compose.dev.yml up -d
+
+services:
+  # Message Queue
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Log Storage
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.1
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    environment:
+      - CLICKHOUSE_DB=logai
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Vector Database
+  qdrant:
+    image: qdrant/qdrant:v1.15.0
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  nats_data:
+  clickhouse_data:
+  qdrant_data:
