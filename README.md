@@ -224,15 +224,23 @@ logai status
 # Search logs
 logai search "timeout error"
 
-# Ask AI a question
+# Ask AI a question  
 logai ask "What caused the crash at 3am?"
 
+# Interactive chat mode (keeps context)
+logai chat
+
 # Import your log files
-logai ingest /var/log/nginx/access.log --format nginx
+logai ingest /var/log/nginx/access.log --format nginx --service my-nginx
 
 # View recent logs
 logai logs --limit 50
+
+# System statistics
+logai stats
 ```
+
+> **Tip:** The CLI binary is at `./target/release/logai` after building
 
 ---
 
@@ -249,6 +257,153 @@ Don't see your format? The AI figures it out automatically for most logs!
 
 ---
 
+## 🔗 Connect Your Logs
+
+### Option 1: From Your App (HTTP API)
+
+Send logs directly from your application code:
+
+**Python**
+```python
+import requests
+import datetime
+
+def send_log(message, level="info", service="my-app"):
+    requests.post("http://localhost:3000/api/logs", json={
+        "message": message,
+        "level": level,
+        "service": service,
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+    })
+
+# Usage
+send_log("User logged in successfully", "info")
+send_log("Database connection failed", "error")
+```
+
+**Node.js**
+```javascript
+async function sendLog(message, level = "info", service = "my-app") {
+  await fetch("http://localhost:3000/api/logs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      level,
+      service,
+      timestamp: new Date().toISOString()
+    })
+  });
+}
+
+// Usage
+sendLog("Order processed", "info");
+sendLog("Payment timeout after 30s", "error");
+```
+
+**cURL**
+```bash
+curl -X POST http://localhost:3000/api/logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "User signup completed",
+    "level": "info",
+    "service": "auth-service",
+    "fields": {"user_id": "12345", "plan": "pro"}
+  }'
+```
+
+### Option 2: From Existing Log Files
+
+Already have log files? Import them with the CLI:
+
+```bash
+# Nginx access logs
+logai ingest /var/log/nginx/access.log --format nginx --service nginx
+
+# Apache logs  
+logai ingest /var/log/apache2/error.log --format apache --service apache
+
+# Syslog
+logai ingest /var/log/syslog --format syslog --service linux
+
+# JSON logs (common with Docker)
+logai ingest /var/log/myapp/app.log --format json --service my-app
+```
+
+> **Note:** The CLI binary is called `logai`. After building, find it at `./target/release/logai`
+
+### Option 3: From Docker Containers
+
+**Using Docker logging driver:**
+```yaml
+# docker-compose.yml for YOUR app
+services:
+  my-app:
+    image: your-app:latest
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: "localhost:24224"
+        tag: "my-app"
+```
+
+**Or just pipe Docker logs:**
+```bash
+# One-liner to send all container logs
+docker logs -f my-container 2>&1 | while read line; do
+  curl -s -X POST http://localhost:3000/api/logs \
+    -H "Content-Type: application/json" \
+    -d "{\"message\": \"$line\", \"service\": \"my-container\"}"
+done
+```
+
+### Option 4: Using Log Forwarders
+
+**Fluent Bit** (lightweight, recommended)
+```ini
+# fluent-bit.conf
+[OUTPUT]
+    Name        http
+    Match       *
+    Host        localhost
+    Port        3000
+    URI         /api/logs
+    Format      json
+```
+
+**Vector** (by Datadog)
+```toml
+# vector.toml
+[sinks.stratum]
+type = "http"
+inputs = ["your_source"]
+uri = "http://localhost:3000/api/logs"
+encoding.codec = "json"
+```
+
+**Filebeat**
+```yaml
+# filebeat.yml
+output.http:
+  hosts: ["http://localhost:3000/api/logs"]
+  codec.json:
+    pretty: false
+```
+
+### Option 5: Try Demo Mode
+
+Want to see it in action first? Start with simulated logs:
+
+```bash
+# Start with demo data (generates realistic logs automatically)
+docker compose --profile demo up -d
+```
+
+This runs a simulator that generates logs from 5 fake services including payment failures, auth attacks, and database slowdowns - so you can test the AI without connecting your real apps.
+
+---
+
 ## ⚙️ Configuration
 
 Create a `.env` file (or run `./setup.sh` which does this for you):
@@ -262,7 +417,7 @@ LLM_PROVIDER=ollama
 OLLAMA_URL=http://localhost:11434
 
 # Optional - Protect your API
-LOGAI_API_KEY=your-secret-key
+STRATUM_API_KEY=your-secret-key
 
 # Optional - Slack alerts
 SLACK_WEBHOOK_URL=https://hooks.slack.com/...
