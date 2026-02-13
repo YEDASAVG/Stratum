@@ -58,7 +58,8 @@ in OrderProcessor.java line 234.
 
 ### Prerequisites
 - [Docker](https://docs.docker.com/get-docker/) installed
-- Free [Groq API key](https://console.groq.com) (takes 30 seconds)
+- **Either:** Free [Groq API key](https://console.groq.com) (takes 30 seconds)
+- **Or:** [Ollama](https://ollama.ai) installed locally (fully offline, no API key)
 
 ### Let's Go!
 
@@ -67,8 +68,11 @@ in OrderProcessor.java line 234.
 git clone https://github.com/YEDASAVG/Stratum.git
 cd Stratum
 
-# 2. Run setup (it will ask for your Groq API key)
-./setup.sh
+# 2. Run setup
+./setup.sh  # For Groq (will ask for API key)
+
+# Or for local-only with Ollama:
+# Set LLM_PROVIDER=ollama in .env (see Configuration section)
 
 # 3. Open your browser
 # Dashboard: http://localhost:3001
@@ -402,20 +406,39 @@ This runs a simulator that generates logs from 5 fake services including payment
 
 ## ⚙️ Configuration
 
-Create a `.env` file (or run `./setup.sh` which does this for you):
+Create a `.env` file (or run `./setup.sh` which does this for you).
+
+### Option 1: Cloud LLM (Groq - Free Tier)
 
 ```bash
-# Required - Get free key at https://console.groq.com
+# Get free key at https://console.groq.com
 GROQ_API_KEY=gsk_your_key_here
+```
 
-# Optional - For local Ollama (no internet needed)
+### Option 2: Local-Only (Ollama - No Internet)
+
+```bash
+# No API key needed - fully offline
 LLM_PROVIDER=ollama
-OLLAMA_URL=http://localhost:11434
+OLLAMA_URL=http://host.docker.internal:11434  # Use this for Docker
+OLLAMA_MODEL=llama3.2  # or any model you have pulled
+```
 
-# Optional - Protect your API
+> **Note:** Use `host.docker.internal` when running in Docker. Use `localhost` only for local development outside Docker.
+
+Make sure Ollama is running locally with a model:
+```bash
+ollama pull llama3.2
+ollama serve
+```
+
+### Optional Settings
+
+```bash
+# Protect your API
 STRATUM_API_KEY=your-secret-key
 
-# Optional - Slack alerts
+# Slack alerts
 SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 ```
 
@@ -426,9 +449,9 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 ### "Do I need to pay for anything?"
 
 **Nope!** 
-- Groq API has a generous free tier (enough for personal use)
+- **Option 1:** Groq API has a generous free tier (enough for personal use)
+- **Option 2:** Use Ollama for 100% free, fully local AI (no API key needed)
 - All infrastructure runs locally in Docker
-- Or use Ollama for 100% free local AI
 
 ### "How many logs can it handle?"
 
@@ -438,7 +461,7 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 
 ### "Can I use my own LLM?"
 
-Yes! Set `LLM_PROVIDER=ollama` and point to your local Ollama.
+Yes! Set `LLM_PROVIDER=ollama` in your `.env` and point `OLLAMA_URL` to your local Ollama instance. No Groq API key required.
 
 ### "Is my data sent anywhere?"
 
