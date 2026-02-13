@@ -163,7 +163,9 @@ export async function sendChat(query: string): Promise<ChatResponse> {
     }),
   })
   if (!res.ok) {
-    const errorData = await res.json().catch(() => ({ error: "Failed to send chat" }))
+    const errorData = await res
+      .json()
+      .catch(() => ({ error: "Failed to send chat" }))
     throw new Error(errorData.error || "Failed to send chat")
   }
   return res.json()

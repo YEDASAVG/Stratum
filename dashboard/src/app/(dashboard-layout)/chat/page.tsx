@@ -129,7 +129,9 @@ export default function ChatPage() {
     <section className="h-[calc(100vh-56px)] flex flex-col px-4 py-3">
       <Card className="flex-1 flex flex-col min-h-0 overflow-hidden">
         <CardHeader className="border-b flex-shrink-0 py-3 px-4">
-          <CardTitle className="text-lg font-semibold">Chat with Your Logs</CardTitle>
+          <CardTitle className="text-lg font-semibold">
+            Chat with Your Logs
+          </CardTitle>
         </CardHeader>
 
         <div className="flex-1 min-h-0 overflow-y-auto p-4" ref={scrollRef}>
@@ -193,7 +195,9 @@ export default function ChatPage() {
                         <ReactMarkdown>{message.content}</ReactMarkdown>
                       </div>
                     ) : (
-                      <p className="whitespace-pre-wrap text-sm">{message.content}</p>
+                      <p className="whitespace-pre-wrap text-sm">
+                        {message.content}
+                      </p>
                     )}
                     {message.metadata && (
                       <div className="mt-2 pt-2 border-t border-border/50 text-xs space-y-2">
@@ -337,7 +341,12 @@ export default function ChatPage() {
                                   <span className="font-medium text-muted-foreground">
                                     💡 Recommendation:
                                   </span>
-                                  <ReactMarkdown>{message.metadata.causalChain.recommendation}</ReactMarkdown>
+                                  <ReactMarkdown>
+                                    {
+                                      message.metadata.causalChain
+                                        .recommendation
+                                    }
+                                  </ReactMarkdown>
                                 </div>
                               </div>
                             )}
