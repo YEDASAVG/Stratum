@@ -68,8 +68,8 @@ in OrderProcessor.java line 234.
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/yourusername/log-intelligence.git
-cd log-intelligence
+git clone https://github.com/YEDASAVG/Stratum.git
+cd Stratum
 
 # 2. Run setup (it will ask for your Groq API key)
 ./setup.sh
@@ -514,8 +514,8 @@ Licensed under the [Apache License 2.0](LICENSE) - use it freely, with patent pr
 If Stratum saved you time debugging, give it a star! It helps others find it.
 
 <p align="center">
-  <a href="https://github.com/yourusername/log-intelligence">
-    <img src="https://img.shields.io/github/stars/yourusername/log-intelligence?style=social" alt="GitHub stars">
+  <a href="https://github.com/YEDASAVG/Stratum">
+    <img src="https://img.shields.io/github/stars/YEDASAVG/Stratum?style=social" alt="GitHub stars">
   </a>
 </p>
 
