@@ -34,7 +34,7 @@ services:
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8123/ping"]
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -48,7 +48,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/6333' || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -131,7 +131,7 @@ services:
     ports:
       - "3001:3001"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:3000
+      - NEXT_PUBLIC_API_URL=http://localhost:3000/api
     depends_on:
       api:
         condition: service_healthy

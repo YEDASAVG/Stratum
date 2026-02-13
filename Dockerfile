@@ -4,7 +4,7 @@
 # ============================================
 # Stage 1: Build
 # ============================================
-FROM rust:1.85-bookworm AS builder
+FROM rust:latest AS builder
 
 WORKDIR /app
 
@@ -54,7 +54,7 @@ RUN cargo build --release
 # ============================================
 # Stage 2: Runtime
 # ============================================
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 WORKDIR /app
 

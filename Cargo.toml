@@ -11,3 +11,6 @@ members = [
 
 [workspace.dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
+
+# Pin time to version compatible with Rust 1.85
+time = "=0.3.36"

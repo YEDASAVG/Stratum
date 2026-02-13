@@ -29,7 +29,7 @@ fastembed = "5"
 qdrant-client = "1.13"
 
 #ClickHouse client
-clickhouse = { version = "0.14.2", features = ["lz4"] }
+clickhouse = { version = "0.14", features = ["lz4"] }
 
 #RAG engine
 logai-rag = { path = "../logai-rag" }

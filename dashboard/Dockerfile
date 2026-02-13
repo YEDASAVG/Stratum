@@ -32,7 +32,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # Set API URL for build time (will be overridden at runtime)
-ENV NEXT_PUBLIC_API_URL=http://localhost:3000
+ENV NEXT_PUBLIC_API_URL=http://localhost:3000/api
 
 # Build the application
 RUN pnpm build

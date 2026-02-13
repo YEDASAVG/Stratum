@@ -17,22 +17,26 @@ const VECTOR_SIZE: u64 = 384; // all mini LML6V2 output 384 dimensions
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
+    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "localhost:4222".to_string());
+    let clickhouse_url = std::env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123".to_string());
+    let qdrant_url = std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".to_string());
+
     //connect to NATS
-    info!("Connecting to NATS...");
-    let nats = async_nats::connect("localhost:4222").await?;
+    info!("Connecting to NATS at {}...", nats_url);
+    let nats = async_nats::connect(&nats_url).await?;
     info!("Connected to NATS!");
 
     // connect to clickhouese
-    info!("Connecting to ClickHouse...");
+    info!("Connecting to ClickHouse at {}...", clickhouse_url);
     let clickhouse = Client::default()
-        .with_url("http://localhost:8123")
+        .with_url(&clickhouse_url)
         .with_database("logai");
     create_logs_table(&clickhouse).await?;
     info!("Clickhouse ready!");
 
     // Conncect to qdrant
-    info!("Connecting to Qdrant...");
-    let qdrant = Qdrant::from_url("http://localhost:6334").build()?;
+    info!("Connecting to Qdrant at {}...", qdrant_url);
+    let qdrant = Qdrant::from_url(&qdrant_url).build()?;
     setup_qdrant_collection(&qdrant).await?;
     info!("Qdrant ready!");
 
