@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="dashboard/public/images/logo.svg" alt="Stratum Logo" width="120" height="120">
+</p>
+
 <h1 align="center">Stratum</h1>
 
 <p align="center">
