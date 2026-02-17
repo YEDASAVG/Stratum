@@ -408,6 +408,17 @@ This runs a simulator that generates logs from 5 fake services including payment
 
 Create a `.env` file (or run `./setup.sh` which does this for you).
 
+### Remote Deployment (Server/VPS)
+
+If you're deploying Stratum on a remote server (not localhost), set your server's IP:
+
+```bash
+# In your .env file
+STRATUM_HOST=192.168.1.100  # or your-domain.com
+```
+
+This ensures the dashboard can connect to the API from your browser.
+
 ### Option 1: Cloud LLM (Groq - Free Tier)
 
 ```bash

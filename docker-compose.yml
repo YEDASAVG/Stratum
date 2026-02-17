@@ -131,7 +131,7 @@ services:
     ports:
       - "3001:3001"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:3000/api
+      - NEXT_PUBLIC_API_URL=http://${STRATUM_HOST:-localhost}:3000/api
     depends_on:
       api:
         condition: service_healthy

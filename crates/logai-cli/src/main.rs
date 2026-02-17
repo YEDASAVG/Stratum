@@ -24,6 +24,10 @@ struct Cli {
     #[arg(short = 'k', long, env = "LOGAI_API_KEY")]
     api_key: Option<String>,
 
+    /// Enable verbose output (debug logging)
+    #[arg(short, long)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -143,6 +147,12 @@ struct LogEntry {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     
+    // Set up logging based on verbose flag
+    if cli.verbose {
+        std::env::set_var("RUST_LOG", "debug");
+        eprintln!("{}", "Verbose mode enabled".dimmed());
+    }
+    
     // Build client with optional API key header
     let mut headers = reqwest::header::HeaderMap::new();
     if let Some(ref key) = cli.api_key {
@@ -163,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             check_status(&client, &cli.api_url).await?;
         }
         Commands::Ingest { file, format, service } => {
-            ingest_file(&client, &cli.api_url, &file, &format, &service).await?;
+            ingest_file(&client, &cli.api_url, &file, &format, &service, cli.verbose).await?;
         }
         Commands::Logs { limit, level } => {
             show_logs(&client, &cli.api_url, limit, level).await?;
@@ -378,6 +388,7 @@ async fn ingest_file(
     file_path: &str,
     format: &str,
     service: &str,
+    verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
@@ -385,6 +396,7 @@ async fn ingest_file(
     println!("\n{} {}", "📥 Ingesting:".cyan().bold(), file_path);
     println!("{} {}", "Format:".dimmed(), format);
     println!("{} {}", "Service:".dimmed(), service);
+    println!("{} {}", "API:".dimmed(), api_url);
     println!("{}", "─".repeat(40).dimmed());
 
     let file = File::open(file_path)?;
@@ -398,6 +410,15 @@ async fn ingest_file(
     let total = lines.len();
     println!("Found {} lines to process", total);
 
+    if verbose && !lines.is_empty() {
+        println!("\n{}", "Sample lines:".yellow());
+        for (i, line) in lines.iter().take(3).enumerate() {
+            let preview = if line.len() > 80 { format!("{}...", &line[..77]) } else { line.clone() };
+            println!("  [{}] {}", i + 1, preview.dimmed());
+        }
+        println!();
+    }
+
     if format == "json" {
         // JSON format: send each line individually
         let pb = indicatif::ProgressBar::new(total as u64);
@@ -409,6 +430,7 @@ async fn ingest_file(
 
         let mut success = 0;
         let mut failed = 0;
+        let mut last_error: Option<String> = None;
 
         for line in &lines {
             let url = format!("{}/api/logs", api_url);
@@ -420,7 +442,20 @@ async fn ingest_file(
                 .await
             {
                 Ok(resp) if resp.status().is_success() => success += 1,
-                _ => failed += 1,
+                Ok(resp) => {
+                    failed += 1;
+                    if verbose {
+                        let status = resp.status();
+                        let text = resp.text().await.unwrap_or_default();
+                        last_error = Some(format!("{}: {}", status, text));
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    if verbose {
+                        last_error = Some(e.to_string());
+                    }
+                }
             }
             pb.inc(1);
         }
@@ -429,6 +464,12 @@ async fn ingest_file(
         println!("\n{}", "Results:".green().bold());
         println!("  {} {}", "Success:".dimmed(), success.to_string().green());
         println!("  {} {}", "Failed:".dimmed(), failed.to_string().red());
+        
+        if verbose {
+            if let Some(err) = last_error {
+                println!("\n{} {}", "Last error:".red(), err);
+            }
+        }
     } else {
         // Raw format (apache, nginx, syslog): send all lines in one batch
         println!("Sending {} lines as batch...", total);
@@ -440,6 +481,10 @@ async fn ingest_file(
             "lines": lines
         });
 
+        if verbose {
+            println!("{} POST {}", "Request:".yellow(), url);
+        }
+
         match client
             .post(&url)
             .header("Content-Type", "application/json")
@@ -449,15 +494,31 @@ async fn ingest_file(
         {
             Ok(resp) => {
                 if resp.status().is_success() {
+                    let response_text = resp.text().await.unwrap_or_default();
                     println!("\n{} Ingested {} logs successfully!", "✓".green().bold(), total);
+                    if verbose && !response_text.is_empty() {
+                        println!("{} {}", "Response:".yellow(), response_text);
+                    }
                 } else {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
                     println!("\n{} Failed: {} - {}", "✗".red().bold(), status, text);
+                    if verbose {
+                        println!("\n{}", "Troubleshooting tips:".yellow().bold());
+                        println!("  1. Check if API is running: curl {}/api/health", api_url);
+                        println!("  2. Check log format matches your file type");
+                        println!("  3. View sample of your file to verify format");
+                    }
                 }
             }
             Err(e) => {
                 println!("\n{} Error: {}", "✗".red().bold(), e);
+                if verbose {
+                    println!("\n{}", "Connection troubleshooting:".yellow().bold());
+                    println!("  1. Verify API URL is correct: {}", api_url);
+                    println!("  2. Check if service is running");
+                    println!("  3. Check network connectivity");
+                }
             }
         }
     }
