@@ -2,10 +2,12 @@
 
 pub mod apache;
 pub mod nginx;
+pub mod proxmox;
 pub mod syslog;
 
 pub use apache::ApacheParser;
 pub use nginx::NginxParser;
+pub use proxmox::ProxmoxParser;
 pub use syslog::SyslogParser;
 
 use crate::RawLogEntry;

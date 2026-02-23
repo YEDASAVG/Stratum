@@ -252,6 +252,7 @@ logai stats
 | **Nginx** | `192.168.1.1 - - [10/Feb/2026:14:00:00 +0000] "GET /api" 500` |
 | **Apache** | `[Tue Feb 10 14:00:00 2026] [error] Connection refused` |
 | **Syslog** | `Feb 10 14:00:00 server sshd[1234]: Failed password` |
+| **Proxmox** | `Feb 23 14:00:00 pve1 pveproxy[1234]: starting worker` |
 
 Don't see your format? The AI figures it out automatically for most logs!
 
@@ -326,6 +327,9 @@ logai ingest /var/log/apache2/error.log --format apache --service apache
 
 # Syslog
 logai ingest /var/log/syslog --format syslog --service linux
+
+# Proxmox VE logs
+logai ingest /var/log/pveproxy/access.log --format proxmox --service proxmox
 
 # JSON logs (common with Docker)
 logai ingest /var/log/myapp/app.log --format json --service my-app

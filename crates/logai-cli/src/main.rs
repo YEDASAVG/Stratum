@@ -6,7 +6,6 @@ use comfy_table::{Table, presets::UTF8_FULL};
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
 use std::process::Command as ProcessCommand;
-use uuid::Uuid;
 
 const DEFAULT_API_URL: &str = "http://localhost:3000";
 
@@ -58,7 +57,7 @@ enum Commands {
         /// Path to log file
         file: String,
 
-        /// Log format (json, apache, nginx, syslog)
+        /// Log format (json, apache, nginx, syslog, proxmox)
         #[arg(short, long, default_value = "json")]
         format: String,
 
@@ -120,6 +119,7 @@ struct AskResponse {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct QueryAnalysis {
     search_query: String,
     time_filter: Option<String>,
@@ -127,6 +127,7 @@ struct QueryAnalysis {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct SearchResult {
     score: f32,
     log_id: String,
@@ -137,6 +138,7 @@ struct SearchResult {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct LogEntry {
     message: String,
     service: String,
@@ -707,6 +709,7 @@ struct AlertResponse {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct AlertItem {
     id: String,
     service: String,
@@ -880,6 +883,7 @@ struct ChatHistoryMessage {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct ChatResponse {
     answer: String,
     sources_count: usize,

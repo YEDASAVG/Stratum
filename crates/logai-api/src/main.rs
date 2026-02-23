@@ -6,7 +6,7 @@ mod state;
 use axum::{middleware as axum_mw, routing::{get, post}, Router};
 use clickhouse::Client as ClickHouseClient;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use logai_core::parser::{ApacheParser, NginxParser, ParserRegistry, SyslogParser};
+use logai_core::parser::{ApacheParser, NginxParser, ParserRegistry, ProxmoxParser, SyslogParser};
 use logai_rag::{RagConfig, RagEngine, Reranker};
 use qdrant_client::Qdrant;
 use std::collections::HashMap;
@@ -59,7 +59,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     parser_registry.register(Box::new(ApacheParser::new()));
     parser_registry.register(Box::new(NginxParser::new()));
     parser_registry.register(Box::new(SyslogParser::new()));
-    info!("Parsers registered: apache, nginx, syslog");
+    parser_registry.register(Box::new(ProxmoxParser::new()));
+    info!("Parsers registered: apache, nginx, syslog, proxmox");
 
     // Setup RAG engine (configurable via LOGAI_GROQ_MODEL env var)
     let rag_config = RagConfig::from_env();
