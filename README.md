@@ -1,3 +1,5 @@
+
+
 <h1 align="center">Stratum</h1>
 
 <p align="center">
@@ -451,7 +453,7 @@ ollama serve
 
 ```bash
 # Protect your API
-STRATUM_API_KEY=your-secret-key
+LOGAI_API_KEY=your-secret-key
 
 # Slack alerts
 SLACK_WEBHOOK_URL=https://hooks.slack.com/...
