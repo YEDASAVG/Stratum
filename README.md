@@ -428,7 +428,28 @@ This ensures the dashboard can connect to the API from your browser.
 ```bash
 # Get free key at https://console.groq.com
 GROQ_API_KEY=gsk_your_key_here
+
+# Optional. Defaults to openai/gpt-oss-20b
+GROQ_MODEL=openai/gpt-oss-20b
 ```
+
+Groq retires models regularly, and a retired name returns
+`500 model_not_found` on every request. List what your account can actually
+use before picking one:
+
+```bash
+curl https://api.groq.com/openai/v1/models \
+  -H "Authorization: Bearer $GROQ_API_KEY"
+```
+
+Verified on a free account, with latency for a short log-analysis prompt:
+
+| Model | Latency | Notes |
+|---|---|---|
+| `openai/gpt-oss-20b` | ~650ms | default |
+| `qwen/qwen3.8-27b` | ~170ms | fastest, most concise answers |
+| `openai/gpt-oss-120b` | ~920ms | more detail |
+| `groq/compound-mini` | ~1800ms | verbose |
 
 ### Option 2: Local-Only (Ollama - No Internet)
 
@@ -451,7 +472,10 @@ ollama serve
 
 ```bash
 # Protect your API
-STRATUM_API_KEY=your-secret-key
+LOGAI_API_KEY=your-secret-key
+
+# Logs sent to the LLM per answer (default 25)
+LOGAI_MAX_CONTEXT_LOGS=25
 
 # Slack alerts
 SLACK_WEBHOOK_URL=https://hooks.slack.com/...

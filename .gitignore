@@ -27,3 +27,6 @@ Thumbs.db
 .fastembed_cache/
 
 *.tar.gz
+
+# Local compose overrides (machine-specific port remaps, etc.)
+docker-compose.override.yml
