@@ -28,6 +28,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // connect to clickhouese
     info!("Connecting to ClickHouse at {}...", clickhouse_url);
+    // A client scoped to `logai` cannot run anything until the database
+    // exists, so bootstrap it with an unscoped client first.
+    Client::default()
+        .with_url(&clickhouse_url)
+        .query("CREATE DATABASE IF NOT EXISTS logai")
+        .execute()
+        .await?;
+
     let clickhouse = Client::default()
         .with_url(&clickhouse_url)
         .with_database("logai");

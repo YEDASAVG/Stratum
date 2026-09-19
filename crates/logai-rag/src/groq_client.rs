@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
-        let client = GroqClient::new("test-key", "llama-3.3-70b-versatile");
-        assert_eq!(client.model(), "llama-3.3-70b-versatile");
+        let client = GroqClient::new("test-key", "openai/gpt-oss-20b");
+        assert_eq!(client.model(), "openai/gpt-oss-20b");
     }
 }

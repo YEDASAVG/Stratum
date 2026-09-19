@@ -38,7 +38,7 @@ impl Default for RagConfig {
     fn default() -> Self {
         Self {
             provider: LlmProvider::Groq,
-            groq_model: "llama-3.3-70b-versatile".to_string(),
+            groq_model: "openai/gpt-oss-20b".to_string(),
             ollama_model: "llama3.2:3b".to_string(),
             ollama_url: "http://localhost:11434".to_string(),
             max_context_logs: 10,
@@ -51,7 +51,7 @@ impl RagConfig {
     /// 
     /// Environment variables:
     /// - LLM_PROVIDER: "groq" or "ollama" (default: "groq")
-    /// - GROQ_MODEL: Groq model name (default: "llama-3.3-70b-versatile")
+    /// - GROQ_MODEL: Groq model name (default: "openai/gpt-oss-20b")
     /// - OLLAMA_URL: Ollama base URL (default: "http://localhost:11434")
     /// - OLLAMA_MODEL: Ollama model name (default: "llama3.2:3b")
     /// - LOGAI_MAX_CONTEXT_LOGS: Max logs in context (default: 10)
@@ -60,7 +60,7 @@ impl RagConfig {
         
         let groq_model = std::env::var("GROQ_MODEL")
             .or_else(|_| std::env::var("LOGAI_GROQ_MODEL"))
-            .unwrap_or_else(|_| "llama-3.3-70b-versatile".to_string());
+            .unwrap_or_else(|_| "openai/gpt-oss-20b".to_string());
         
         let ollama_url = std::env::var("OLLAMA_URL")
             .unwrap_or_else(|_| "http://localhost:11434".to_string());
