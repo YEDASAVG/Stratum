@@ -32,6 +32,8 @@ tracing = "0.1"
 
 [dev-dependencies]
 criterion = { workspace = true }
+# Lets examples read .env, the same way logai-api does.
+dotenvy = "0.15"
 
 [[bench]]
 name = "rag"

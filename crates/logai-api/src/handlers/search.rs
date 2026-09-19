@@ -100,7 +100,11 @@ pub async fn ask_logs(
     let start = Instant::now();
     info!(query = %params.q, "ASK request");
 
-    let analyzed = state.rag_engine.analyze_query(&params.q);
+    let known_services = state.known_services().await;
+    let analyzed = state
+        .rag_engine
+        .analyze_query_with_jev(&params.q, state.jev.as_ref(), &known_services)
+        .await;
 
     let query_vector = {
         let mut model = state.model.lock().unwrap();

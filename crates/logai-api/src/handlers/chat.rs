@@ -15,7 +15,7 @@ use crate::models::{ApiError, ChatApiResponse, ChatMessage, ChatRequest, CausalC
 use crate::state::{AppState, ChatSession, QueryIntent, COLLECTION_NAME};
 
 // Import RAG's QueryIntent (different from our local one)
-use logai_rag::QueryIntent as RagQueryIntent;
+use logai_rag::{JevClient, QueryIntent as RagQueryIntent};
 
 pub async fn chat_logs(
     State(state): State<Arc<AppState>>,
@@ -42,21 +42,6 @@ pub async fn chat_logs(
         "yesterday", "today", "last hour", "last minute", "recent", "happened", "show me", "find"];
     let has_log_context = log_keywords.iter().any(|k| msg_lower.contains(k));
 
-    let is_offtopic = if !has_log_context && msg_lower.len() > 5 {
-        let classification = state.rag_engine.classify(&format!(
-            r#"Is this question about analyzing logs, debugging, system errors, or infrastructure monitoring?
-Question: "{}"
-Answer YES or NO only."#,
-            req.message
-        )).await;
-
-        match classification {
-            Ok(response) => !response.to_uppercase().contains("YES"),
-            Err(_) => false,
-        }
-    } else {
-        false
-    };
 
     if is_greeting {
         let elapsed = start.elapsed().as_millis();
@@ -72,18 +57,9 @@ Answer YES or NO only."#,
         }));
     }
 
-    if is_gibberish || is_offtopic {
+    if is_gibberish {
         let elapsed = start.elapsed().as_millis();
-        return Ok(Json(ChatApiResponse {
-            answer: "I'm LogAI - I specialize in analyzing your system logs. I can help with:\n\n• Finding errors and warnings\n• Investigating performance issues\n• Summarizing anomalies and incidents\n• Debugging service failures\n\nTry: \"Show me errors in the last hour\" or \"Why is the database slow?\"".to_string(),
-            sources_count: 0,
-            response_time_ms: elapsed,
-            provider: "system".to_string(),
-            context_logs: 0,
-            conversation_turn: 1,
-            source_logs: vec![],
-            causal_chain: None,
-        }));
+        return Ok(Json(not_log_related_response(elapsed)));
     }
 
     let (history, last_logs, last_query, turn) = {
@@ -107,11 +83,35 @@ Answer YES or NO only."#,
         )
     };
 
-    let intent = classify_query_intent(&state.rag_engine, &last_query, &req.message).await;
-    info!(intent = ?intent, "Query intent classified");
+    // One call answers both: on-topic, and follow-up vs new search.
+    let turn_class = classify_turn(
+        state.jev.as_ref(),
+        &state.rag_engine,
+        &last_query,
+        &req.message,
+        has_log_context,
+    )
+    .await;
+
+    if turn_class.off_topic {
+        let elapsed = start.elapsed().as_millis();
+        return Ok(Json(not_log_related_response(elapsed)));
+    }
+
+    let intent = turn_class.intent;
+    info!(
+        intent = ?intent,
+        confidence = turn_class.confidence,
+        classified_by = turn_class.classified_by,
+        "Query intent classified"
+    );
 
     // Always check if current message is a causal query (even for follow-ups)
-    let analyzed = state.rag_engine.analyze_query(&req.message);
+    let known_services = state.known_services().await;
+    let analyzed = state
+        .rag_engine
+        .analyze_query_with_jev(&req.message, state.jev.as_ref(), &known_services)
+        .await;
     let is_causal_query = analyzed.intent == RagQueryIntent::Causal;
     info!(
         is_causal = is_causal_query, 
@@ -403,7 +403,128 @@ fn build_conversation_context(history: &[ChatMessage]) -> String {
         .join("\n")
 }
 
-async fn classify_query_intent(rag_engine: &logai_rag::RagEngine, last_query: &str, new_query: &str) -> QueryIntent {
+/// Reply for messages that are not about logs.
+fn not_log_related_response(elapsed_ms: u128) -> ChatApiResponse {
+    ChatApiResponse {
+        answer: "I'm LogAI - I specialize in analyzing your system logs. I can help with:\n\n• Finding errors and warnings\n• Investigating performance issues\n• Summarizing anomalies and incidents\n• Debugging service failures\n\nTry: \"Show me errors in the last hour\" or \"Why is the database slow?\"".to_string(),
+        sources_count: 0,
+        response_time_ms: elapsed_ms,
+        provider: "system".to_string(),
+        context_logs: 0,
+        conversation_turn: 1,
+        source_logs: vec![],
+        causal_chain: None,
+    }
+}
+
+pub struct TurnClassification {
+    pub off_topic: bool,
+    pub intent: QueryIntent,
+    /// 1.0 when a deterministic rule decided it.
+    pub confidence: f32,
+    pub classified_by: &'static str,
+}
+
+/// Both questions go in one Jev request. Falls back to the keyword rules plus
+/// an LLM tie-break when Jev is unconfigured, errors, or is not confident.
+async fn classify_turn(
+    jev: Option<&JevClient>,
+    rag_engine: &logai_rag::RagEngine,
+    last_query: &str,
+    new_query: &str,
+    has_log_context: bool,
+) -> TurnClassification {
+    // No reason to spend a call on a first message that already looks like
+    // a log question.
+    if last_query.is_empty() && has_log_context {
+        return TurnClassification {
+            off_topic: false,
+            intent: QueryIntent::NewSearch,
+            confidence: 1.0,
+            classified_by: "rules",
+        };
+    }
+
+    if let Some(jev) = jev {
+        let state = serde_json::json!({
+            "previous_query": last_query,
+            "new_query": new_query,
+        });
+        let questions = serde_json::json!({
+            "about_logs": {
+                "type": "noul",
+                "instructions": "Is `new_query` asking about system logs, errors, debugging, infrastructure, monitoring or service behaviour?",
+                "criteria": {
+                    "true": "Asks about logs, errors, services, incidents or system behaviour",
+                    "false": "Small talk, or a question about an unrelated subject"
+                }
+            },
+            "continues_topic": {
+                "type": "choice",
+                "instructions": "Does `new_query` continue the topic of `previous_query`, or start a different one? Treat it as continuing when it refers back with words like \"it\", \"that error\" or \"the first one\", or asks for more detail on the same subject.",
+                "criteria": {
+                    "follow_up":  "Asks about the same logs, error or subject as the previous query",
+                    "new_search": "Introduces a different service, error, topic or time range",
+                    "unclear":    "There is not enough in the two queries to tell"
+                }
+            }
+        });
+
+        match jev.system_one(&state, &questions).await {
+            Ok(response) => {
+                // Wrongly refusing a user is the worst outcome, so only act on
+                // a clear "no" that the keywords also agree with.
+                let off_topic = matches!(response.noul("about_logs"), Ok(p) if p < 0.2)
+                    && !has_log_context;
+
+                if let Ok((choice, confidence)) = response.choice("continues_topic") {
+                    if confidence >= 0.6 {
+                        let intent = match choice {
+                            "follow_up" => Some(QueryIntent::FollowUp),
+                            "new_search" => Some(QueryIntent::NewSearch),
+                            _ => None,
+                        };
+                        if let Some(intent) = intent {
+                            return TurnClassification {
+                                off_topic,
+                                intent,
+                                confidence,
+                                classified_by: "jev",
+                            };
+                        }
+                    }
+                }
+
+                if off_topic {
+                    return TurnClassification {
+                        off_topic: true,
+                        intent: QueryIntent::NewSearch,
+                        confidence: 0.0,
+                        classified_by: "jev",
+                    };
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Jev turn classification failed, using rules path");
+            }
+        }
+    }
+
+    let intent = classify_query_intent_rules(rag_engine, last_query, new_query).await;
+    TurnClassification {
+        off_topic: false,
+        intent,
+        confidence: 1.0,
+        classified_by: "rules",
+    }
+}
+
+/// Fallback path: a deployment with no TypeSafe key behaves as before.
+async fn classify_query_intent_rules(
+    rag_engine: &logai_rag::RagEngine,
+    last_query: &str,
+    new_query: &str,
+) -> QueryIntent {
     if last_query.is_empty() {
         return QueryIntent::NewSearch;
     }
