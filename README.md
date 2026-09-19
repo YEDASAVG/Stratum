@@ -93,6 +93,14 @@ cd Stratum
 | "What happened at 3am?" | Summarizes all events in that time window |
 | "Why did users get 502 errors?" | Traces the root cause across services |
 
+### 🧠 Understands What You Meant
+
+"Walk me through request 7f3a92" is a trace lookup. "Give me the gist of last
+night" is a summary. Stratum works this out from meaning rather than matching
+keywords, and says how confident it is - so an ambiguous question is answered
+carefully instead of confidently wrong. See
+[TypeSafe Jev](#option-3-smarter-query-understanding-typesafe-jev---optional).
+
 ### 🔍 Smart Search (Not Just Keywords)
 
 Search for `"database connection issues"` and it finds:
@@ -141,6 +149,11 @@ Get alerts in Slack before users complain.
 │  │  ClickHouse │  │    Groq     │  │  Dashboard  │                 │
 │  │  (Storage)  │  │   (LLM)     │  │  (Next.js)  │                 │
 │  └─────────────┘  └─────────────┘  └─────────────┘                 │
+│                                                                     │
+│  ┌───────────────────────────────────────────────┐                 │
+│  │  Jev (optional): typed query classification   │                 │
+│  │  intent / service / severity + confidence     │                 │
+│  └───────────────────────────────────────────────┘                 │
 └─────────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -467,6 +480,46 @@ Make sure Ollama is running locally with a model:
 ollama pull llama3.2
 ollama serve
 ```
+
+### Option 3: Smarter Query Understanding (TypeSafe Jev - Optional)
+
+Stratum works out of the box using keyword rules to work out what a question
+means. Those rules only recognise the words they were written for: intent
+detection keys off `starts_with("why")`, and service detection matches a
+fixed list of 17 names, so a query about your `payments-api` or
+`ledger-worker` silently matches nothing and searches unfiltered.
+
+Set a TypeSafe key and a System One model classifies instead. It returns a
+typed answer plus a calibrated confidence, so low-confidence filters are
+dropped rather than guessed:
+
+```bash
+# Optional. Get a key at https://console.typesafe.ai
+TYPESAFE_API_KEY=ts_your_key_here
+
+# Optional. Defaults to jev-latest
+# JEV_MODEL=jev-1.13.0
+```
+
+Leave it blank and everything falls back to the keyword rules, so the
+fully-offline Ollama setup is unaffected.
+
+Compare the two paths on your own queries:
+
+```bash
+cargo run -p logai-rag --example jev_smoke
+```
+
+```
+QUERY                                    RULES              JEV
+why did payments-api throw 500s at 3am   Causal / api       Causal / payments-api
+anything weird with the ledger worker    Search / -         Search / ledger-worker
+walk me through request 7f3a92           Search / -         Trace  / -
+give me the gist of last night           Search / -         Summary / -
+```
+
+Note row one: the regex matches the substring `api` inside `payments-api`
+and filters to a service that does not exist, which returns nothing.
 
 ### Optional Settings
 

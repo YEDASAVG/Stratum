@@ -2253,6 +2253,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "criterion",
+ "dotenvy",
  "logai-core",
  "regex",
  "reqwest 0.13.2",

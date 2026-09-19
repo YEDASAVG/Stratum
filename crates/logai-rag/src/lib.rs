@@ -7,11 +7,13 @@ pub mod llm_client;
 pub mod groq_client;
 pub mod ollama_client;
 pub mod causal;
+pub mod jev_client;
 
-pub use query_analyzer::{AnalyzedQuery, QueryAnalyzer, QueryIntent};
+pub use query_analyzer::{AnalyzedQuery, Classifier, QueryAnalyzer, QueryIntent};
 pub use engine::{RagEngine, RagConfig, RagResponse, QueryAnalysis};
 pub use reranker::{Reranker, RankedLog};
 pub use llm_client::{LlmClient, LlmError, LlmProvider};
 pub use groq_client::GroqClient;
 pub use ollama_client::OllamaClient;
 pub use causal::{CausalChainAnalyzer, CausalChain, CausalLink, LogEvent, CausalError};
+pub use jev_client::{Answer, JevClient, JevError, SystemOneResponse};

@@ -5,6 +5,7 @@ use crate::causal::{CausalChain, CausalChainAnalyzer};
 use crate::llm_client::{LlmClient, LlmError, LlmProvider};
 use crate::groq_client::GroqClient;
 use crate::ollama_client::OllamaClient;
+use crate::jev_client::JevClient;
 use crate::query_analyzer::{AnalyzedQuery, QueryAnalyzer, QueryIntent};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -271,6 +272,24 @@ impl RagEngine {
     // get analyzed query (for API to use in search)
     pub fn analyze_query(&self, query: &str) -> AnalyzedQuery {
         self.analyzer.analyze(query)
+    }
+
+    /// Uses Jev when configured, otherwise the rules path. Empty
+    /// `known_services` leaves service extraction to the regex.
+    pub async fn analyze_query_with_jev(
+        &self,
+        query: &str,
+        jev: Option<&JevClient>,
+        known_services: &[String],
+    ) -> AnalyzedQuery {
+        match jev {
+            Some(jev) => {
+                self.analyzer
+                    .analyze_with_jev(query, jev, known_services)
+                    .await
+            }
+            None => self.analyzer.analyze(query),
+        }
     }
 
     fn build_context(&self, logs: &[String]) -> String {

@@ -7,7 +7,7 @@ use axum::{middleware as axum_mw, routing::{get, post}, Router};
 use clickhouse::Client as ClickHouseClient;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use logai_core::parser::{ApacheParser, NginxParser, ParserRegistry, ProxmoxParser, SyslogParser};
-use logai_rag::{RagConfig, RagEngine, Reranker};
+use logai_rag::{JevClient, RagConfig, RagEngine, Reranker};
 use qdrant_client::Qdrant;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -72,6 +72,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reranker = Reranker::new();
     info!("RAG engine ready!");
 
+    let jev = match JevClient::from_env() {
+        Ok(client) => {
+            info!(model = %client.model(), "Jev classification enabled");
+            Some(client)
+        }
+        Err(_) => {
+            info!("TYPESAFE_API_KEY not set, using rules-based classification");
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
         nats,
         qdrant,
@@ -80,7 +91,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         parser_registry,
         rag_engine,
         reranker,
+        jev,
         sessions: RwLock::new(HashMap::new()),
+        service_cache: RwLock::new(Default::default()),
     });
 
     //routes - protected routes with API key

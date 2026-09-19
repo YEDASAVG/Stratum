@@ -77,6 +77,9 @@ services:
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
       - LOGAI_MAX_CONTEXT_LOGS=${LOGAI_MAX_CONTEXT_LOGS:-25}
       - LOGAI_API_KEY=${LOGAI_API_KEY:-}
+      # Optional. Unset leaves query classification on the rules path.
+      - TYPESAFE_API_KEY=${TYPESAFE_API_KEY:-}
+      - JEV_MODEL=${JEV_MODEL:-jev-latest}
     command: ["./logai-api"]
     depends_on:
       nats:
